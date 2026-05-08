@@ -35,6 +35,18 @@ services:
     networks:
       - toolkit-internal
 
+  unfurl:
+    build:
+      context: ./unfurl
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ}
+    volumes:
+      - ./unfurl/unfurl.ini:/unfurl/unfurl.ini:ro
+    networks:
+      - toolkit-internal
+
 networks:
   nginx-proxy:
     external: true

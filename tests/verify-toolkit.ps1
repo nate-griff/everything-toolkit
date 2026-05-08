@@ -52,6 +52,8 @@ function Test-Scaffold {
         'docker-compose.yml',
         'landing\index.html',
         'landing\nginx.conf',
+        'unfurl\Dockerfile',
+        'unfurl\unfurl.ini',
         'README.md',
         'tests\verify-toolkit.ps1',
         'tests\verify-toolkit.sh'
@@ -72,7 +74,7 @@ function Test-Compose {
 
     $baseConfig = Get-ComposeConfig -Files @('docker-compose.yml')
 
-    foreach ($serviceName in @('toolkit-landing', 'omni-tools', 'cyberchef', 'it-tools')) {
+    foreach ($serviceName in @('toolkit-landing', 'omni-tools', 'cyberchef', 'it-tools', 'unfurl')) {
         Assert-True ($null -ne $baseConfig.services.$serviceName) "Expected service '$serviceName' in docker-compose.yml."
         Assert-True ($baseConfig.services.$serviceName.restart -eq 'unless-stopped') "Expected '$serviceName' to use restart: unless-stopped."
         Assert-True (-not $baseConfig.services.$serviceName.ports) "Expected '$serviceName' to have no host ports in docker-compose.yml."
@@ -81,10 +83,13 @@ function Test-Compose {
     Assert-True ($baseConfig.services.'toolkit-landing'.image -eq 'nginx:alpine') "Expected toolkit-landing to use nginx:alpine."
     Assert-True ($baseConfig.services.'cyberchef'.image -eq 'ghcr.io/gchq/cyberchef:latest') "Expected cyberchef to use the official ghcr.io/gchq/cyberchef:latest image."
     Assert-True (-not $baseConfig.services.'it-tools'.environment.BASE_URL) "Expected it-tools to have no BASE_URL set (it now runs at /)."
+    $unfurlBuildContext = [string]$baseConfig.services.'unfurl'.build.context
+    Assert-True ($unfurlBuildContext -match '(^|[\\/])unfurl$') "Expected unfurl to build from the local unfurl directory."
+    Assert-True ($baseConfig.services.'unfurl'.build.dockerfile -eq 'Dockerfile') "Expected unfurl to use the upstream Dockerfile."
     $toolkitLandingNetworks = $baseConfig.services.'toolkit-landing'.networks.PSObject.Properties.Name | Sort-Object
     Assert-True (($toolkitLandingNetworks -join ',') -eq 'nginx-proxy,toolkit-internal') "Expected toolkit-landing on both networks."
 
-    foreach ($serviceName in @('omni-tools', 'cyberchef', 'it-tools')) {
+    foreach ($serviceName in @('omni-tools', 'cyberchef', 'it-tools', 'unfurl')) {
         $serviceNetworks = $baseConfig.services.$serviceName.networks.PSObject.Properties.Name | Sort-Object
         Assert-True (($serviceNetworks -join ',') -eq 'toolkit-internal') "Expected '$serviceName' on toolkit-internal only."
     }
@@ -97,13 +102,18 @@ function Test-Compose {
     $nginxMount = $toolkitLandingVolumes | Where-Object { $_.target -eq '/etc/nginx/conf.d/default.conf' }
     Assert-True ($null -ne $indexMount -and $indexMount.read_only) "Expected toolkit-landing to mount landing/index.html read-only."
     Assert-True ($null -ne $nginxMount -and $nginxMount.read_only) "Expected toolkit-landing to mount landing/nginx.conf read-only."
+    $unfurlConfigMount = $baseConfig.services.'unfurl'.volumes | Where-Object { $_.target -eq '/unfurl/unfurl.ini' }
+    Assert-True ($null -ne $unfurlConfigMount -and $unfurlConfigMount.read_only) "Expected unfurl to mount unfurl/unfurl.ini read-only."
+    $unfurlDockerfile = Get-Content (Get-RepoPath 'unfurl\Dockerfile') -Raw
+    Assert-True ($unfurlDockerfile -match 'git clone https://github\.com/RyanDFIR/unfurl /unfurl') "Expected unfurl Dockerfile to clone the RyanDFIR/unfurl repository during build."
+    Assert-True ($unfurlDockerfile -match 'git checkout 2d2dac375433d2a7fbeede2d25c5f19b68d4d244') "Expected unfurl Dockerfile to pin the upstream checkout to the planned commit."
 
     $localConfig = Get-ComposeConfig -Files @('docker-compose.yml', 'docker-compose.local.yml')
     $toolkitLandingPorts = @($localConfig.services.'toolkit-landing'.ports)
     $localhostPort = $toolkitLandingPorts | Where-Object { $_.published -eq '8080' -and $_.target -eq 80 }
     Assert-True ($null -ne $localhostPort) "Expected local override to expose toolkit-landing on 8080."
     Assert-True ($localConfig.networks.'nginx-proxy'.external -ne $true) "Expected local override to avoid requiring a pre-existing external nginx-proxy network."
-    foreach ($serviceName in @('omni-tools', 'cyberchef', 'it-tools')) {
+    foreach ($serviceName in @('omni-tools', 'cyberchef', 'it-tools', 'unfurl')) {
         Assert-True (-not $localConfig.services.$serviceName.ports) "Expected '$serviceName' to remain unexposed in local override."
     }
 }
@@ -118,6 +128,7 @@ function Test-Proxy {
     # Dynamic subdomain helper maps
     Assert-True ($nginxConfig -match 'map \$http_host \$omni_host') "Expected nginx config to define an \$omni_host map for subdomain-aware redirects."
     Assert-True ($nginxConfig -match 'map \$http_host \$it_host') "Expected nginx config to define an \$it_host map for subdomain-aware redirects."
+    Assert-True ($nginxConfig -match 'map \$http_host \$unfurl_host') "Expected nginx config to define an \$unfurl_host map for subdomain-aware redirects."
 
     Assert-True ($nginxConfig -match '(?m)^\s*listen\s+80;') "Expected nginx to listen on port 80."
 
@@ -125,6 +136,7 @@ function Test-Proxy {
     Assert-True ($nginxConfig -match 'server_name\s+tools\.n8-g\.com\s+tools\.localtest\.me;') "Expected tools server block with server_name tools.n8-g.com tools.localtest.me."
     Assert-True ($nginxConfig -match 'server_name\s+omni\.tools\.n8-g\.com\s+omni\.tools\.localtest\.me;') "Expected omni.tools server block with server_name omni.tools.n8-g.com omni.tools.localtest.me."
     Assert-True ($nginxConfig -match 'server_name\s+it\.tools\.n8-g\.com\s+it\.tools\.localtest\.me;') "Expected it.tools server block with server_name it.tools.n8-g.com it.tools.localtest.me."
+    Assert-True ($nginxConfig -match 'server_name\s+unfurl\.tools\.n8-g\.com\s+unfurl\.tools\.localtest\.me;') "Expected unfurl.tools server block with server_name unfurl.tools.n8-g.com unfurl.tools.localtest.me."
 
     # Landing page served from filesystem on the tools host
     Assert-True ($nginxConfig -match '(?m)^\s*root\s+/usr/share/nginx/html;') "Expected nginx root to serve the landing page."
@@ -133,11 +145,13 @@ function Test-Proxy {
     # Legacy redirects on tools host forward to the correct subdomains using $redirect_scheme
     Assert-True ($nginxConfig -match '(?ms)location\s+/omni/\s*\{.*return\s+301\s+\$redirect_scheme://\$omni_host/;') "Expected legacy /omni/ redirect to \$omni_host subdomain using \$redirect_scheme."
     Assert-True ($nginxConfig -match '(?ms)location\s+/it-tools/\s*\{.*return\s+301\s+\$redirect_scheme://\$it_host/;') "Expected legacy /it-tools/ redirect to \$it_host subdomain using \$redirect_scheme."
+    Assert-True ($nginxConfig -match '(?ms)location\s+/unfurl/\s*\{.*return\s+301\s+\$redirect_scheme://\$unfurl_host/;') "Expected legacy /unfurl/ redirect to \$unfurl_host subdomain using \$redirect_scheme."
 
     # CyberChef remains path-based on the tools host
     Assert-True ($nginxConfig -match '(?ms)location\s+/cyberchef/\s*\{.*proxy_pass\s+http://cyberchef:8080/;') "Expected CyberChef proxy block at /cyberchef/ targeting http://cyberchef:8080/."
 
-    # Omni Tools and IT Tools proxied at / on their respective server blocks
+    # Dedicated subdomain servers proxy the tools at /
+    Assert-True ($nginxConfig -match 'proxy_pass\s+http://unfurl:5000/;') "Expected proxy_pass to http://unfurl:5000/ in the unfurl.tools server block."
     Assert-True ($nginxConfig -match 'proxy_pass\s+http://omni-tools:80/;') "Expected proxy_pass to http://omni-tools:80/ in the omni.tools server block."
     Assert-True ($nginxConfig -match 'proxy_pass\s+http://it-tools:80/;') "Expected proxy_pass to http://it-tools:80/ in the it.tools server block."
 
@@ -159,6 +173,7 @@ function Test-Proxy {
         '--add-host', 'omni-tools:127.0.0.1',
         '--add-host', 'cyberchef:127.0.0.1',
         '--add-host', 'it-tools:127.0.0.1',
+        '--add-host', 'unfurl:127.0.0.1',
         '-v', "${repoRootForDocker}/landing/nginx.conf:/etc/nginx/conf.d/default.conf:ro",
         'nginx:alpine',
         'nginx', '-t'
@@ -179,7 +194,8 @@ function Test-Landing {
     $links = @(
         @{ Label = 'Omni Tools'; Href = '/omni/'; Description = 'General-purpose browser tools' },
         @{ Label = 'CyberChef'; Href = '/cyberchef/'; Description = 'Encoding, decoding, encryption, data analysis' },
-        @{ Label = 'IT Tools'; Href = '/it-tools/'; Description = 'Developer utilities: tokens, hashes, formatters' }
+        @{ Label = 'IT Tools'; Href = '/it-tools/'; Description = 'Developer utilities: tokens, hashes, formatters' },
+        @{ Label = 'Unfurl'; Href = '/unfurl/'; Description = 'URL decoding, parsing, and graph visualization' }
     )
 
     foreach ($link in $links) {
@@ -208,18 +224,25 @@ function Test-Docs {
         'http://tools.localtest.me:8080/',
         'http://omni.tools.localtest.me:8080/',
         'http://it.tools.localtest.me:8080/',
+        'http://unfurl.tools.localtest.me:8080/',
         'http://tools.localtest.me:8080/cyberchef/',
         'tools.n8-g.com',
         'omni.tools.n8-g.com',
         'it.tools.n8-g.com',
+        'unfurl.tools.n8-g.com',
         'toolkit-landing',
+        'docker compose -f docker-compose.yml -f docker-compose.local.yml build unfurl',
+        'git clone https://github.com/RyanDFIR/unfurl /unfurl',
+        '2d2dac375433d2a7fbeede2d25c5f19b68d4d244',
         '.\tests\verify-toolkit.ps1 scaffold',
         'bash ./tests/verify-toolkit.sh scaffold',
         'docker compose config',
         'docker ps',
         'docker network inspect nginx-proxy',
         'Invoke-WebRequest http://tools.localtest.me:8080/',
-        'curl -I http://tools.localtest.me:8080/'
+        'Invoke-WebRequest http://unfurl.tools.localtest.me:8080/',
+        'curl -I http://tools.localtest.me:8080/',
+        'curl -I http://unfurl.tools.localtest.me:8080/'
     )) {
         Assert-True ($readme -match [regex]::Escape($snippet)) "Expected README to mention '$snippet'."
     }
@@ -242,6 +265,10 @@ function Test-Runtime {
     $itHtml = (curl.exe -s http://it.tools.localtest.me:8080/) -join "`n"
     Assert-True ((-not [string]::IsNullOrWhiteSpace($itHtml)) -and ($itHtml -match '(?i)<html')) "Expected it.tools.localtest.me:8080/ to return an HTML page."
 
+    # Unfurl on its own subdomain
+    $unfurlHtml = (curl.exe -s http://unfurl.tools.localtest.me:8080/) -join "`n"
+    Assert-True ($unfurlHtml -match '(?i)<title>\s*unfurl\s*</title>') "Expected unfurl.tools.localtest.me:8080/ to return the Unfurl UI."
+
     # Legacy /omni/ path on tools host redirects to omni subdomain
     $omniRedirectCode = (curl.exe -s -o 'NUL' -w '%{http_code}' http://tools.localtest.me:8080/omni/) -join ''
     Assert-True ($omniRedirectCode -eq '301') "Expected tools.localtest.me:8080/omni/ to return 301 redirect to the omni subdomain."
@@ -255,6 +282,13 @@ function Test-Runtime {
 
     $itRedirectHeaders = (curl.exe -s -I http://tools.localtest.me:8080/it-tools/) -join "`n"
     Assert-True ($itRedirectHeaders -match '(?i)location:\s*http://it\.tools\.localtest\.me:8080/') "Expected /it-tools/ redirect Location to point to it.tools.localtest.me:8080/."
+
+    # Legacy /unfurl/ path on tools host redirects to the Unfurl subdomain
+    $unfurlRedirectCode = (curl.exe -s -o 'NUL' -w '%{http_code}' http://tools.localtest.me:8080/unfurl/) -join ''
+    Assert-True ($unfurlRedirectCode -eq '301') "Expected tools.localtest.me:8080/unfurl/ to return 301 redirect to the Unfurl subdomain."
+
+    $unfurlRedirectHeaders = (curl.exe -s -I http://tools.localtest.me:8080/unfurl/) -join "`n"
+    Assert-True ($unfurlRedirectHeaders -match '(?i)location:\s*http://unfurl\.tools\.localtest\.me:8080/') "Expected /unfurl/ redirect Location to point to unfurl.tools.localtest.me:8080/."
 }
 
 switch ($Suite) {

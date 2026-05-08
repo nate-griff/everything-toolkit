@@ -1,11 +1,12 @@
 # Conversion Toolkit
 
-Self-hosted toolkit stack with one nginx landing/proxy container and three
-prebuilt tool containers:
+Self-hosted toolkit stack with one nginx landing/proxy container, three
+prebuilt tool containers, and one locally built tool container:
 
 - Omni Tools
 - CyberChef
 - IT Tools
+- Unfurl
 
 Production uses Nginx Proxy Manager (NPM) to send every public host to the
 `toolkit-landing:80` container. The landing page then routes users to the right
@@ -24,6 +25,8 @@ tool. Tool containers stay internal-only on `toolkit-internal`.
 ├── tests/
 │   ├── verify-toolkit.ps1
 │   └── verify-toolkit.sh
+├── unfurl/
+│   └── unfurl.ini
 └── README.md
 ```
 
@@ -57,11 +60,32 @@ tool. Tool containers stay internal-only on `toolkit-internal`.
    docker compose -f docker-compose.yml -f docker-compose.local.yml up -d
    ```
 
+   On the first run, Docker Compose builds Unfurl with the local
+   `unfurl/Dockerfile`. That Dockerfile clones the pinned `RyanDFIR/unfurl`
+   commit during the image build. If the pinned ref changes later, rebuild it with:
+
+   **PowerShell**
+
+   ```powershell
+   docker compose -f docker-compose.yml -f docker-compose.local.yml build unfurl
+   ```
+
+   **Bash**
+
+   ```bash
+   docker compose -f docker-compose.yml -f docker-compose.local.yml build unfurl
+   ```
+
+   The build currently uses:
+   - `git clone https://github.com/RyanDFIR/unfurl /unfurl`
+   - pinned commit `2d2dac375433d2a7fbeede2d25c5f19b68d4d244`
+
 3. Open the stack locally with localtest.me hosts:
-   - `http://tools.localtest.me:8080/`
-   - `http://tools.localtest.me:8080/cyberchef/`
-   - `http://omni.tools.localtest.me:8080/`
-   - `http://it.tools.localtest.me:8080/`
+    - `http://tools.localtest.me:8080/`
+    - `http://tools.localtest.me:8080/cyberchef/`
+    - `http://omni.tools.localtest.me:8080/`
+    - `http://it.tools.localtest.me:8080/`
+    - `http://unfurl.tools.localtest.me:8080/`
 
 `localtest.me` resolves to `127.0.0.1`, so basic testing works without editing
 your hosts file.
@@ -77,12 +101,13 @@ containers remain unexposed.
 | `http://tools.localtest.me:8080/cyberchef/` | CyberChef |
 | `http://omni.tools.localtest.me:8080/` | Omni Tools |
 | `http://it.tools.localtest.me:8080/` | IT Tools |
+| `http://unfurl.tools.localtest.me:8080/` | Unfurl |
 
 ## Production Notes
 
 - Keep the base `docker-compose.yml` for production so `nginx-proxy` stays an
   external network there.
-- NPM should forward all three public hosts to `toolkit-landing:80`:
+- NPM should forward all four public hosts to `toolkit-landing:80`:
 
 | Public host | Path | Target app |
 | --- | --- | --- |
@@ -90,6 +115,7 @@ containers remain unexposed.
 | `tools.n8-g.com` | `/cyberchef/` | CyberChef |
 | `omni.tools.n8-g.com` | `/` | Omni Tools |
 | `it.tools.n8-g.com` | `/` | IT Tools |
+| `unfurl.tools.n8-g.com` | `/` | Unfurl |
 
 - Recommended NPM settings for each proxy host:
   - Forward hostname: `toolkit-landing`
@@ -99,11 +125,18 @@ containers remain unexposed.
 - `toolkit-landing` remains the only container attached to both `nginx-proxy`
   and `toolkit-internal`; the tool containers stay internal-only.
 
-### Why Omni and IT Tools moved to subdomains
+### Why some tools use subdomains
 
 Omni Tools and IT Tools were moved off subpaths because their SPA routing and
 asset loading were not reliable when served under `/omni/` or `/it-tools/`.
 Serving them from their own subdomains avoids those breakages.
+
+Unfurl also runs on its own subdomain. Its upstream Flask app assumes root-level
+routes such as `/`, `/graph`, `/json/visjs`, and `/static/*`, so proxying it
+under `/unfurl/` would require patching upstream behavior. The landing page
+keeps a relative `/unfurl/` link, and `toolkit-landing` redirects that path to
+the Unfurl subdomain. The repository does not vendor the upstream source; the
+local `unfurl/Dockerfile` clones the pinned commit during image build instead.
 
 ## Verification
 
@@ -135,6 +168,7 @@ Useful runtime checks:
 
 ```powershell
 docker compose config
+docker compose -f docker-compose.yml -f docker-compose.local.yml build unfurl
 docker compose -f docker-compose.yml -f docker-compose.local.yml ps
 docker ps
 docker network inspect nginx-proxy
@@ -149,6 +183,7 @@ Invoke-WebRequest http://tools.localtest.me:8080/
 Invoke-WebRequest http://tools.localtest.me:8080/cyberchef/
 Invoke-WebRequest http://omni.tools.localtest.me:8080/
 Invoke-WebRequest http://it.tools.localtest.me:8080/
+Invoke-WebRequest http://unfurl.tools.localtest.me:8080/
 ```
 
 **Bash**
@@ -158,4 +193,5 @@ curl -I http://tools.localtest.me:8080/
 curl -I http://tools.localtest.me:8080/cyberchef/
 curl -I http://omni.tools.localtest.me:8080/
 curl -I http://it.tools.localtest.me:8080/
+curl -I http://unfurl.tools.localtest.me:8080/
 ```
