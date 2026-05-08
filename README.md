@@ -3,12 +3,12 @@
 Self-hosted toolkit stack with one nginx landing/proxy container, three
 prebuilt tool containers, and one locally built tool container:
 
-- Omni Tools
-- CyberChef
-- IT Tools
-- Unfurl
+- [Omni Tools](https://github.com/iib0011/omni-tools)
+- [CyberChef](https://github.com/gchq/cyberchef)
+- [IT Tools](https://github.com/CorentinTh/it-tools)
+- [Unfurl](https://github.com/RyanDFIR/unfurl)
 
-Production uses Nginx Proxy Manager (NPM) to send every public host to the
+Production uses [Nginx Proxy Manager (NPM)](https://github.com/NginxProxyManager/nginx-proxy-manager) to send every public host to the
 `toolkit-landing:80` container. The landing page then routes users to the right
 tool. Tool containers stay internal-only on `toolkit-internal`.
 
