@@ -52,7 +52,9 @@ function Test-Scaffold {
         'docker-compose.yml',
         'landing\index.html',
         'landing\nginx.conf',
-        'README.md'
+        'README.md',
+        'tests\verify-toolkit.ps1',
+        'tests\verify-toolkit.sh'
     )
 
     foreach ($relativePath in $requiredFiles) {
@@ -200,7 +202,8 @@ function Test-Docs {
     }
 
     foreach ($snippet in @(
-        'Copy `.env.example` to `.env`',
+        'Copy-Item .env.example .env',
+        'cp .env.example .env',
         'docker compose -f docker-compose.yml -f docker-compose.local.yml up -d',
         'http://tools.localtest.me:8080/',
         'http://omni.tools.localtest.me:8080/',
@@ -210,9 +213,13 @@ function Test-Docs {
         'omni.tools.n8-g.com',
         'it.tools.n8-g.com',
         'toolkit-landing',
+        '.\tests\verify-toolkit.ps1 scaffold',
+        'bash ./tests/verify-toolkit.sh scaffold',
         'docker compose config',
         'docker ps',
-        'docker network inspect nginx-proxy'
+        'docker network inspect nginx-proxy',
+        'Invoke-WebRequest http://tools.localtest.me:8080/',
+        'curl -I http://tools.localtest.me:8080/'
     )) {
         Assert-True ($readme -match [regex]::Escape($snippet)) "Expected README to mention '$snippet'."
     }

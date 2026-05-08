@@ -22,16 +22,38 @@ tool. Tool containers stay internal-only on `toolkit-internal`.
 │   ├── index.html
 │   └── nginx.conf
 ├── tests/
-│   └── verify-toolkit.ps1
+│   ├── verify-toolkit.ps1
+│   └── verify-toolkit.sh
 └── README.md
 ```
 
 ## Local Development
 
 1. Copy `.env.example` to `.env`.
-2. Start the stack with:
+
+   **PowerShell**
 
    ```powershell
+   Copy-Item .env.example .env
+   ```
+
+   **Bash**
+
+   ```bash
+   cp .env.example .env
+   ```
+
+2. Start the stack with:
+
+   **PowerShell**
+
+   ```powershell
+   docker compose -f docker-compose.yml -f docker-compose.local.yml up -d
+   ```
+
+   **Bash**
+
+   ```bash
    docker compose -f docker-compose.yml -f docker-compose.local.yml up -d
    ```
 
@@ -87,6 +109,8 @@ Serving them from their own subdomains avoids those breakages.
 
 Run the lightweight repository checks:
 
+**PowerShell**
+
 ```powershell
 .\tests\verify-toolkit.ps1 scaffold
 .\tests\verify-toolkit.ps1 compose
@@ -94,6 +118,17 @@ Run the lightweight repository checks:
 .\tests\verify-toolkit.ps1 landing
 .\tests\verify-toolkit.ps1 docs
 .\tests\verify-toolkit.ps1 runtime
+```
+
+**Bash**
+
+```bash
+bash ./tests/verify-toolkit.sh scaffold
+bash ./tests/verify-toolkit.sh compose
+bash ./tests/verify-toolkit.sh proxy
+bash ./tests/verify-toolkit.sh landing
+bash ./tests/verify-toolkit.sh docs
+bash ./tests/verify-toolkit.sh runtime
 ```
 
 Useful runtime checks:
@@ -107,9 +142,20 @@ docker network inspect nginx-proxy
 
 Suggested runtime checks:
 
+**PowerShell**
+
 ```powershell
 Invoke-WebRequest http://tools.localtest.me:8080/
 Invoke-WebRequest http://tools.localtest.me:8080/cyberchef/
 Invoke-WebRequest http://omni.tools.localtest.me:8080/
 Invoke-WebRequest http://it.tools.localtest.me:8080/
+```
+
+**Bash**
+
+```bash
+curl -I http://tools.localtest.me:8080/
+curl -I http://tools.localtest.me:8080/cyberchef/
+curl -I http://omni.tools.localtest.me:8080/
+curl -I http://it.tools.localtest.me:8080/
 ```
