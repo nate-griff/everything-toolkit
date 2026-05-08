@@ -1,0 +1,9 @@
+services:
+  toolkit-landing:
+    ports:
+      - "8080:80"
+
+networks:
+  nginx-proxy:
+    external: false
+    name: toolkit-local-proxy

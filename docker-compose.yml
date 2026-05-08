@@ -1,0 +1,42 @@
+services:
+  toolkit-landing:
+    image: nginx:alpine
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ}
+    volumes:
+      - ./landing/index.html:/usr/share/nginx/html/index.html:ro
+      - ./landing/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    networks:
+      - nginx-proxy
+      - toolkit-internal
+
+  omni-tools:
+    image: iib0011/omni-tools:latest
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ}
+    networks:
+      - toolkit-internal
+
+  cyberchef:
+    image: ghcr.io/gchq/cyberchef:latest
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ}
+    networks:
+      - toolkit-internal
+
+  it-tools:
+    image: corentinth/it-tools:latest
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ}
+    networks:
+      - toolkit-internal
+
+networks:
+  nginx-proxy:
+    external: true
+  toolkit-internal:
+    driver: bridge
