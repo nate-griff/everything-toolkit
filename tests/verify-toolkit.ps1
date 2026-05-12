@@ -51,7 +51,9 @@ function Test-Scaffold {
         '.env.example',
         'docker-compose.yml',
         'landing\index.html',
-        'landing\nginx.conf',
+        'landing\nginx.conf.template',
+        'parsel\Dockerfile',
+        'stegg\Dockerfile',
         'unfurl\Dockerfile',
         'unfurl\unfurl.ini',
         'README.md',
@@ -74,13 +76,14 @@ function Test-Compose {
 
     $baseConfig = Get-ComposeConfig -Files @('docker-compose.yml')
 
-    foreach ($serviceName in @('toolkit-landing', 'omni-tools', 'cyberchef', 'it-tools', 'unfurl')) {
+    foreach ($serviceName in @('toolkit-landing', 'omni-tools', 'cyberchef', 'it-tools', 'parsel', 'stegg', 'network', 'pb', 'unfurl')) {
         Assert-True ($null -ne $baseConfig.services.$serviceName) "Expected service '$serviceName' in docker-compose.yml."
         Assert-True ($baseConfig.services.$serviceName.restart -eq 'unless-stopped') "Expected '$serviceName' to use restart: unless-stopped."
         Assert-True (-not $baseConfig.services.$serviceName.ports) "Expected '$serviceName' to have no host ports in docker-compose.yml."
     }
 
     Assert-True ($baseConfig.services.'toolkit-landing'.image -eq 'nginx:alpine') "Expected toolkit-landing to use nginx:alpine."
+    Assert-True (-not [string]::IsNullOrWhiteSpace([string]$baseConfig.services.'toolkit-landing'.environment.ROOT_DOMAIN)) "Expected toolkit-landing to receive ROOT_DOMAIN from the environment."
     Assert-True ($baseConfig.services.'cyberchef'.image -eq 'ghcr.io/gchq/cyberchef:latest') "Expected cyberchef to use the official ghcr.io/gchq/cyberchef:latest image."
     Assert-True (-not $baseConfig.services.'it-tools'.environment.BASE_URL) "Expected it-tools to have no BASE_URL set (it now runs at /)."
     $unfurlBuildContext = [string]$baseConfig.services.'unfurl'.build.context
@@ -89,7 +92,7 @@ function Test-Compose {
     $toolkitLandingNetworks = $baseConfig.services.'toolkit-landing'.networks.PSObject.Properties.Name | Sort-Object
     Assert-True (($toolkitLandingNetworks -join ',') -eq 'nginx-proxy,toolkit-internal') "Expected toolkit-landing on both networks."
 
-    foreach ($serviceName in @('omni-tools', 'cyberchef', 'it-tools', 'unfurl')) {
+    foreach ($serviceName in @('omni-tools', 'cyberchef', 'it-tools', 'parsel', 'stegg', 'network', 'pb', 'unfurl')) {
         $serviceNetworks = $baseConfig.services.$serviceName.networks.PSObject.Properties.Name | Sort-Object
         Assert-True (($serviceNetworks -join ',') -eq 'toolkit-internal') "Expected '$serviceName' on toolkit-internal only."
     }
@@ -99,11 +102,17 @@ function Test-Compose {
 
     $toolkitLandingVolumes = $baseConfig.services.'toolkit-landing'.volumes
     $indexMount = $toolkitLandingVolumes | Where-Object { $_.target -eq '/usr/share/nginx/html/index.html' }
+    $templateMount = $toolkitLandingVolumes | Where-Object { $_.target -eq '/etc/nginx/templates/default.conf.template' }
     $nginxMount = $toolkitLandingVolumes | Where-Object { $_.target -eq '/etc/nginx/conf.d/default.conf' }
     Assert-True ($null -ne $indexMount -and $indexMount.read_only) "Expected toolkit-landing to mount landing/index.html read-only."
-    Assert-True ($null -ne $nginxMount -and $nginxMount.read_only) "Expected toolkit-landing to mount landing/nginx.conf read-only."
+    Assert-True ($null -ne $templateMount -and $templateMount.read_only) "Expected toolkit-landing to mount an nginx template read-only."
+    Assert-True ($null -eq $nginxMount) "Expected toolkit-landing to stop mounting a static landing/nginx.conf into conf.d/default.conf."
     $unfurlConfigMount = $baseConfig.services.'unfurl'.volumes | Where-Object { $_.target -eq '/unfurl/unfurl.ini' }
     Assert-True ($null -ne $unfurlConfigMount -and $unfurlConfigMount.read_only) "Expected unfurl to mount unfurl/unfurl.ini read-only."
+    $pbDataMount = $baseConfig.services.'pb'.volumes | Where-Object { $_.target -eq '/app/microbin_data' }
+    Assert-True ($null -ne $pbDataMount) "Expected pb to mount persistent storage at /app/microbin_data."
+    Assert-True ([string]$baseConfig.services.'network'.environment.PORT -eq '3000') "Expected network to expose its upstream app on port 3000."
+    Assert-True ([string]$baseConfig.services.'pb'.environment.MICROBIN_PORT -eq '8080') "Expected pb to expose MicroBin on port 8080."
     $unfurlDockerfile = Get-Content (Get-RepoPath 'unfurl\Dockerfile') -Raw
     Assert-True ($unfurlDockerfile -match 'git clone https://github\.com/RyanDFIR/unfurl /unfurl') "Expected unfurl Dockerfile to clone the RyanDFIR/unfurl repository during build."
     Assert-True ($unfurlDockerfile -match 'git checkout 2d2dac375433d2a7fbeede2d25c5f19b68d4d244') "Expected unfurl Dockerfile to pin the upstream checkout to the planned commit."
@@ -113,30 +122,40 @@ function Test-Compose {
     $localhostPort = $toolkitLandingPorts | Where-Object { $_.published -eq '8080' -and $_.target -eq 80 }
     Assert-True ($null -ne $localhostPort) "Expected local override to expose toolkit-landing on 8080."
     Assert-True ($localConfig.networks.'nginx-proxy'.external -ne $true) "Expected local override to avoid requiring a pre-existing external nginx-proxy network."
-    foreach ($serviceName in @('omni-tools', 'cyberchef', 'it-tools', 'unfurl')) {
+    foreach ($serviceName in @('omni-tools', 'cyberchef', 'it-tools', 'parsel', 'stegg', 'network', 'pb', 'unfurl')) {
         Assert-True (-not $localConfig.services.$serviceName.ports) "Expected '$serviceName' to remain unexposed in local override."
     }
 }
 
 function Test-Proxy {
-    $nginxConfigPath = Get-RepoPath 'landing\nginx.conf'
+    $nginxConfigPath = Get-RepoPath 'landing\nginx.conf.template'
     $nginxConfig = Get-Content $nginxConfigPath -Raw
 
     # X-Forwarded-Proto → redirect-safe scheme map
     Assert-True ($nginxConfig -match '(?ms)map \$http_x_forwarded_proto \$redirect_scheme \{.*default \$http_x_forwarded_proto;.*""\s+\$scheme;.*\}') "Expected nginx config to map forwarded HTTPS to a redirect-safe scheme."
+    Assert-True ($nginxConfig -match 'ROOT_DOMAIN') "Expected nginx template to use ROOT_DOMAIN instead of a hard-coded production domain."
+    Assert-True ($nginxConfig -notmatch 'n8-g\.com') "Expected nginx template to avoid hard-coded n8-g.com references."
 
     # Dynamic subdomain helper maps
     Assert-True ($nginxConfig -match 'map \$http_host \$omni_host') "Expected nginx config to define an \$omni_host map for subdomain-aware redirects."
     Assert-True ($nginxConfig -match 'map \$http_host \$it_host') "Expected nginx config to define an \$it_host map for subdomain-aware redirects."
     Assert-True ($nginxConfig -match 'map \$http_host \$unfurl_host') "Expected nginx config to define an \$unfurl_host map for subdomain-aware redirects."
+    Assert-True ($nginxConfig -match 'map \$http_host \$parsel_host') "Expected nginx config to define a \$parsel_host map for subdomain-aware redirects."
+    Assert-True ($nginxConfig -match 'map \$http_host \$stegg_host') "Expected nginx config to define a \$stegg_host map for subdomain-aware redirects."
+    Assert-True ($nginxConfig -match 'map \$http_host \$network_host') "Expected nginx config to define a \$network_host map for subdomain-aware redirects."
+    Assert-True ($nginxConfig -match 'map \$http_host \$pb_host') "Expected nginx config to define a \$pb_host map for subdomain-aware redirects."
 
     Assert-True ($nginxConfig -match '(?m)^\s*listen\s+80;') "Expected nginx to listen on port 80."
 
     # Named server blocks for each host
-    Assert-True ($nginxConfig -match 'server_name\s+tools\.n8-g\.com\s+tools\.localtest\.me;') "Expected tools server block with server_name tools.n8-g.com tools.localtest.me."
-    Assert-True ($nginxConfig -match 'server_name\s+omni\.tools\.n8-g\.com\s+omni\.tools\.localtest\.me;') "Expected omni.tools server block with server_name omni.tools.n8-g.com omni.tools.localtest.me."
-    Assert-True ($nginxConfig -match 'server_name\s+it\.tools\.n8-g\.com\s+it\.tools\.localtest\.me;') "Expected it.tools server block with server_name it.tools.n8-g.com it.tools.localtest.me."
-    Assert-True ($nginxConfig -match 'server_name\s+unfurl\.tools\.n8-g\.com\s+unfurl\.tools\.localtest\.me;') "Expected unfurl.tools server block with server_name unfurl.tools.n8-g.com unfurl.tools.localtest.me."
+    Assert-True ($nginxConfig -match 'server_name\s+tools\.\$\{?ROOT_DOMAIN\}?\s+tools\.localtest\.me;') "Expected tools server block to derive its production domain from ROOT_DOMAIN."
+    Assert-True ($nginxConfig -match 'server_name\s+omni\.tools\.\$\{?ROOT_DOMAIN\}?\s+omni\.tools\.localtest\.me;') "Expected omni.tools server block to derive its production domain from ROOT_DOMAIN."
+    Assert-True ($nginxConfig -match 'server_name\s+it\.tools\.\$\{?ROOT_DOMAIN\}?\s+it\.tools\.localtest\.me;') "Expected it.tools server block to derive its production domain from ROOT_DOMAIN."
+    Assert-True ($nginxConfig -match 'server_name\s+unfurl\.tools\.\$\{?ROOT_DOMAIN\}?\s+unfurl\.tools\.localtest\.me;') "Expected unfurl.tools server block to derive its production domain from ROOT_DOMAIN."
+    Assert-True ($nginxConfig -match 'server_name\s+parsel\.tools\.\$\{?ROOT_DOMAIN\}?\s+parsel\.tools\.localtest\.me;') "Expected parsel.tools server block to derive its production domain from ROOT_DOMAIN."
+    Assert-True ($nginxConfig -match 'server_name\s+stegg\.tools\.\$\{?ROOT_DOMAIN\}?\s+stegg\.tools\.localtest\.me;') "Expected stegg.tools server block to derive its production domain from ROOT_DOMAIN."
+    Assert-True ($nginxConfig -match 'server_name\s+network\.tools\.\$\{?ROOT_DOMAIN\}?\s+network\.tools\.localtest\.me;') "Expected network.tools server block to derive its production domain from ROOT_DOMAIN."
+    Assert-True ($nginxConfig -match 'server_name\s+pb\.tools\.\$\{?ROOT_DOMAIN\}?\s+pb\.tools\.localtest\.me;') "Expected pb.tools server block to derive its production domain from ROOT_DOMAIN."
 
     # Landing page served from filesystem on the tools host
     Assert-True ($nginxConfig -match '(?m)^\s*root\s+/usr/share/nginx/html;') "Expected nginx root to serve the landing page."
@@ -146,6 +165,10 @@ function Test-Proxy {
     Assert-True ($nginxConfig -match '(?ms)location\s+/omni/\s*\{.*return\s+301\s+\$redirect_scheme://\$omni_host/;') "Expected legacy /omni/ redirect to \$omni_host subdomain using \$redirect_scheme."
     Assert-True ($nginxConfig -match '(?ms)location\s+/it-tools/\s*\{.*return\s+301\s+\$redirect_scheme://\$it_host/;') "Expected legacy /it-tools/ redirect to \$it_host subdomain using \$redirect_scheme."
     Assert-True ($nginxConfig -match '(?ms)location\s+/unfurl/\s*\{.*return\s+301\s+\$redirect_scheme://\$unfurl_host/;') "Expected legacy /unfurl/ redirect to \$unfurl_host subdomain using \$redirect_scheme."
+    Assert-True ($nginxConfig -match '(?ms)location\s+/parsel/\s*\{.*return\s+301\s+\$redirect_scheme://\$parsel_host/;') "Expected legacy /parsel/ redirect to \$parsel_host subdomain using \$redirect_scheme."
+    Assert-True ($nginxConfig -match '(?ms)location\s+/stegg/\s*\{.*return\s+301\s+\$redirect_scheme://\$stegg_host/;') "Expected legacy /stegg/ redirect to \$stegg_host subdomain using \$redirect_scheme."
+    Assert-True ($nginxConfig -match '(?ms)location\s+/network/\s*\{.*return\s+301\s+\$redirect_scheme://\$network_host/;') "Expected legacy /network/ redirect to \$network_host subdomain using \$redirect_scheme."
+    Assert-True ($nginxConfig -match '(?ms)location\s+/pb/\s*\{.*return\s+301\s+\$redirect_scheme://\$pb_host/;') "Expected legacy /pb/ redirect to \$pb_host subdomain using \$redirect_scheme."
 
     # CyberChef remains path-based on the tools host
     Assert-True ($nginxConfig -match '(?ms)location\s+/cyberchef/\s*\{.*proxy_pass\s+http://cyberchef:8080/;') "Expected CyberChef proxy block at /cyberchef/ targeting http://cyberchef:8080/."
@@ -154,6 +177,11 @@ function Test-Proxy {
     Assert-True ($nginxConfig -match 'proxy_pass\s+http://unfurl:5000/;') "Expected proxy_pass to http://unfurl:5000/ in the unfurl.tools server block."
     Assert-True ($nginxConfig -match 'proxy_pass\s+http://omni-tools:80/;') "Expected proxy_pass to http://omni-tools:80/ in the omni.tools server block."
     Assert-True ($nginxConfig -match 'proxy_pass\s+http://it-tools:80/;') "Expected proxy_pass to http://it-tools:80/ in the it.tools server block."
+    Assert-True ($nginxConfig -match 'proxy_pass\s+http://parsel:\d+/;') "Expected proxy_pass to http://parsel:<port>/ in the parsel.tools server block."
+    Assert-True ($nginxConfig -match 'proxy_pass\s+http://stegg:\d+/;') "Expected proxy_pass to http://stegg:<port>/ in the stegg.tools server block."
+    Assert-True ($nginxConfig -match 'proxy_pass\s+http://network:3000/;') "Expected proxy_pass to http://network:3000/ in the network.tools server block."
+    Assert-True ($nginxConfig -match 'proxy_pass\s+http://pb:8080/;') "Expected proxy_pass to http://pb:8080/ in the pb.tools server block."
+    Assert-True ($nginxConfig -match '(?m)^\s*client_max_body_size\s+100m;') "Expected pb.tools server block to raise client_max_body_size for uploads."
 
     foreach ($header in @(
         'proxy_set_header\s+Host\s+\$host;',
@@ -170,16 +198,21 @@ function Test-Proxy {
     $repoRootForDocker = $RepoRoot -replace '\\', '/'
     $dockerArgs = @(
         'run', '--rm',
+        '-e', 'ROOT_DOMAIN=example.com',
         '--add-host', 'omni-tools:127.0.0.1',
         '--add-host', 'cyberchef:127.0.0.1',
         '--add-host', 'it-tools:127.0.0.1',
+        '--add-host', 'parsel:127.0.0.1',
+        '--add-host', 'stegg:127.0.0.1',
+        '--add-host', 'network:127.0.0.1',
+        '--add-host', 'pb:127.0.0.1',
         '--add-host', 'unfurl:127.0.0.1',
-        '-v', "${repoRootForDocker}/landing/nginx.conf:/etc/nginx/conf.d/default.conf:ro",
+        '-v', "${repoRootForDocker}/landing/nginx.conf.template:/etc/nginx/templates/default.conf.template:ro",
         'nginx:alpine',
-        'nginx', '-t'
+        'sh', '-c', 'envsubst ''$ROOT_DOMAIN'' < /etc/nginx/templates/default.conf.template > /etc/nginx/conf.d/default.conf && nginx -t'
     )
     $null = docker @dockerArgs
-    Assert-True ($LASTEXITCODE -eq 0) "Expected nginx -t to accept landing/nginx.conf."
+    Assert-True ($LASTEXITCODE -eq 0) "Expected nginx -t to accept landing/nginx.conf.template."
 }
 
 function Test-Landing {
@@ -195,6 +228,10 @@ function Test-Landing {
         @{ Label = 'Omni Tools'; Href = '/omni/'; Description = 'General-purpose browser tools' },
         @{ Label = 'CyberChef'; Href = '/cyberchef/'; Description = 'Encoding, decoding, encryption, data analysis' },
         @{ Label = 'IT Tools'; Href = '/it-tools/'; Description = 'Developer utilities: tokens, hashes, formatters' },
+        @{ Label = 'Parsel'; Href = '/parsel/'; Description = 'Parse and inspect structured data quickly' },
+        @{ Label = 'Stegg'; Href = '/stegg/'; Description = 'Steganography workflows and payload inspection' },
+        @{ Label = 'Network'; Href = '/network/'; Description = 'Network utilities and troubleshooting helpers' },
+        @{ Label = 'PB'; Href = '/pb/'; Description = 'Paste and upload larger files in a dedicated subdomain' },
         @{ Label = 'Unfurl'; Href = '/unfurl/'; Description = 'URL decoding, parsing, and graph visualization' }
     )
 
@@ -224,12 +261,13 @@ function Test-Docs {
         'http://tools.localtest.me:8080/',
         'http://omni.tools.localtest.me:8080/',
         'http://it.tools.localtest.me:8080/',
+        'http://parsel.tools.localtest.me:8080/',
+        'http://stegg.tools.localtest.me:8080/',
+        'http://network.tools.localtest.me:8080/',
+        'http://pb.tools.localtest.me:8080/',
         'http://unfurl.tools.localtest.me:8080/',
         'http://tools.localtest.me:8080/cyberchef/',
-        'tools.n8-g.com',
-        'omni.tools.n8-g.com',
-        'it.tools.n8-g.com',
-        'unfurl.tools.n8-g.com',
+        'ROOT_DOMAIN',
         'toolkit-landing',
         'docker compose -f docker-compose.yml -f docker-compose.local.yml build unfurl',
         'git clone https://github.com/RyanDFIR/unfurl /unfurl',
@@ -240,12 +278,16 @@ function Test-Docs {
         'docker ps',
         'docker network inspect nginx-proxy',
         'Invoke-WebRequest http://tools.localtest.me:8080/',
+        'Invoke-WebRequest http://parsel.tools.localtest.me:8080/',
         'Invoke-WebRequest http://unfurl.tools.localtest.me:8080/',
         'curl -I http://tools.localtest.me:8080/',
+        'curl -I http://parsel.tools.localtest.me:8080/',
         'curl -I http://unfurl.tools.localtest.me:8080/'
     )) {
         Assert-True ($readme -match [regex]::Escape($snippet)) "Expected README to mention '$snippet'."
     }
+
+    Assert-True ($readme -notmatch 'n8-g\.com') "Expected README to stop hard-coding n8-g.com."
 }
 
 function Test-Runtime {
@@ -257,38 +299,24 @@ function Test-Runtime {
     $cyberchefHtml = (curl.exe -s http://tools.localtest.me:8080/cyberchef/) -join "`n"
     Assert-True ($cyberchefHtml -match '(?i)cyberchef') "Expected tools.localtest.me:8080/cyberchef/ to return CyberChef content."
 
-    # Omni Tools on its own subdomain
-    $omniHtml = (curl.exe -s http://omni.tools.localtest.me:8080/) -join "`n"
-    Assert-True ((-not [string]::IsNullOrWhiteSpace($omniHtml)) -and ($omniHtml -match '(?i)<html')) "Expected omni.tools.localtest.me:8080/ to return an HTML page."
+    foreach ($tool in @(
+        @{ Name = 'Omni Tools'; Host = 'omni.tools.localtest.me'; Path = '/'; Expect = '(?i)<html'; RedirectPath = '/omni/'; RedirectHost = 'omni.tools.localtest.me' },
+        @{ Name = 'IT Tools'; Host = 'it.tools.localtest.me'; Path = '/'; Expect = '(?i)<html'; RedirectPath = '/it-tools/'; RedirectHost = 'it.tools.localtest.me' },
+        @{ Name = 'Parsel'; Host = 'parsel.tools.localtest.me'; Path = '/'; Expect = '(?i)<html'; RedirectPath = '/parsel/'; RedirectHost = 'parsel.tools.localtest.me' },
+        @{ Name = 'Stegg'; Host = 'stegg.tools.localtest.me'; Path = '/'; Expect = '(?i)<html'; RedirectPath = '/stegg/'; RedirectHost = 'stegg.tools.localtest.me' },
+        @{ Name = 'Network'; Host = 'network.tools.localtest.me'; Path = '/'; Expect = '(?i)<html'; RedirectPath = '/network/'; RedirectHost = 'network.tools.localtest.me' },
+        @{ Name = 'PB'; Host = 'pb.tools.localtest.me'; Path = '/'; Expect = '(?i)<html'; RedirectPath = '/pb/'; RedirectHost = 'pb.tools.localtest.me' },
+        @{ Name = 'Unfurl'; Host = 'unfurl.tools.localtest.me'; Path = '/'; Expect = '(?i)<title>\s*unfurl\s*</title>'; RedirectPath = '/unfurl/'; RedirectHost = 'unfurl.tools.localtest.me' }
+    )) {
+        $html = (curl.exe -s ("http://{0}:8080{1}" -f $tool.Host, $tool.Path)) -join "`n"
+        Assert-True ((-not [string]::IsNullOrWhiteSpace($html)) -and ($html -match $tool.Expect)) "Expected $($tool.Host):8080/ to return the $($tool.Name) app."
 
-    # IT Tools on its own subdomain
-    $itHtml = (curl.exe -s http://it.tools.localtest.me:8080/) -join "`n"
-    Assert-True ((-not [string]::IsNullOrWhiteSpace($itHtml)) -and ($itHtml -match '(?i)<html')) "Expected it.tools.localtest.me:8080/ to return an HTML page."
+        $redirectCode = (curl.exe -s -o 'NUL' -w '%{http_code}' ("http://tools.localtest.me:8080{0}" -f $tool.RedirectPath)) -join ''
+        Assert-True ($redirectCode -eq '301') "Expected tools.localtest.me:8080$($tool.RedirectPath) to return 301 redirect to the $($tool.Name) subdomain."
 
-    # Unfurl on its own subdomain
-    $unfurlHtml = (curl.exe -s http://unfurl.tools.localtest.me:8080/) -join "`n"
-    Assert-True ($unfurlHtml -match '(?i)<title>\s*unfurl\s*</title>') "Expected unfurl.tools.localtest.me:8080/ to return the Unfurl UI."
-
-    # Legacy /omni/ path on tools host redirects to omni subdomain
-    $omniRedirectCode = (curl.exe -s -o 'NUL' -w '%{http_code}' http://tools.localtest.me:8080/omni/) -join ''
-    Assert-True ($omniRedirectCode -eq '301') "Expected tools.localtest.me:8080/omni/ to return 301 redirect to the omni subdomain."
-
-    $omniRedirectHeaders = (curl.exe -s -I http://tools.localtest.me:8080/omni/) -join "`n"
-    Assert-True ($omniRedirectHeaders -match '(?i)location:\s*http://omni\.tools\.localtest\.me:8080/') "Expected /omni/ redirect Location to point to omni.tools.localtest.me:8080/."
-
-    # Legacy /it-tools/ path on tools host redirects to it subdomain
-    $itRedirectCode = (curl.exe -s -o 'NUL' -w '%{http_code}' http://tools.localtest.me:8080/it-tools/) -join ''
-    Assert-True ($itRedirectCode -eq '301') "Expected tools.localtest.me:8080/it-tools/ to return 301 redirect to the it subdomain."
-
-    $itRedirectHeaders = (curl.exe -s -I http://tools.localtest.me:8080/it-tools/) -join "`n"
-    Assert-True ($itRedirectHeaders -match '(?i)location:\s*http://it\.tools\.localtest\.me:8080/') "Expected /it-tools/ redirect Location to point to it.tools.localtest.me:8080/."
-
-    # Legacy /unfurl/ path on tools host redirects to the Unfurl subdomain
-    $unfurlRedirectCode = (curl.exe -s -o 'NUL' -w '%{http_code}' http://tools.localtest.me:8080/unfurl/) -join ''
-    Assert-True ($unfurlRedirectCode -eq '301') "Expected tools.localtest.me:8080/unfurl/ to return 301 redirect to the Unfurl subdomain."
-
-    $unfurlRedirectHeaders = (curl.exe -s -I http://tools.localtest.me:8080/unfurl/) -join "`n"
-    Assert-True ($unfurlRedirectHeaders -match '(?i)location:\s*http://unfurl\.tools\.localtest\.me:8080/') "Expected /unfurl/ redirect Location to point to unfurl.tools.localtest.me:8080/."
+        $redirectHeaders = (curl.exe -s -I ("http://tools.localtest.me:8080{0}" -f $tool.RedirectPath)) -join "`n"
+        Assert-True ($redirectHeaders -match ('(?i)location:\s*http://{0}:8080/' -f [regex]::Escape($tool.RedirectHost))) "Expected $($tool.RedirectPath) redirect Location to point to $($tool.RedirectHost):8080/."
+    }
 }
 
 switch ($Suite) {

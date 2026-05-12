@@ -1,0 +1,238 @@
+# Honour X-Forwarded-Proto set by Nginx Proxy Manager so redirects stay https.
+map $http_x_forwarded_proto $redirect_scheme {
+    default $http_x_forwarded_proto;
+    ""      $scheme;
+}
+
+map $http_host $omni_host {
+    ~^tools\.(?<rest>.+)$ omni.tools.$rest;
+    default               omni.tools.${ROOT_DOMAIN};
+}
+
+map $http_host $it_host {
+    ~^tools\.(?<rest>.+)$ it.tools.$rest;
+    default               it.tools.${ROOT_DOMAIN};
+}
+
+map $http_host $unfurl_host {
+    ~^tools\.(?<rest>.+)$ unfurl.tools.$rest;
+    default               unfurl.tools.${ROOT_DOMAIN};
+}
+
+map $http_host $parsel_host {
+    ~^tools\.(?<rest>.+)$ parsel.tools.$rest;
+    default               parsel.tools.${ROOT_DOMAIN};
+}
+
+map $http_host $stegg_host {
+    ~^tools\.(?<rest>.+)$ stegg.tools.$rest;
+    default               stegg.tools.${ROOT_DOMAIN};
+}
+
+map $http_host $network_host {
+    ~^tools\.(?<rest>.+)$ network.tools.$rest;
+    default               network.tools.${ROOT_DOMAIN};
+}
+
+map $http_host $pb_host {
+    ~^tools\.(?<rest>.+)$ pb.tools.$rest;
+    default               pb.tools.${ROOT_DOMAIN};
+}
+
+# -- tools.*: landing page + CyberChef ---------------------------------------
+server {
+    listen 80;
+    server_name tools.${ROOT_DOMAIN} tools.localtest.me;
+
+    root  /usr/share/nginx/html;
+    index index.html;
+
+    access_log /dev/stdout;
+    error_log  /dev/stderr warn;
+
+    location = / {
+        try_files /index.html =404;
+    }
+
+    location = /omni {
+        return 301 $redirect_scheme://$omni_host/;
+    }
+    location /omni/ {
+        return 301 $redirect_scheme://$omni_host/;
+    }
+
+    location = /it-tools {
+        return 301 $redirect_scheme://$it_host/;
+    }
+    location /it-tools/ {
+        return 301 $redirect_scheme://$it_host/;
+    }
+
+    location = /unfurl {
+        return 301 $redirect_scheme://$unfurl_host/;
+    }
+    location /unfurl/ {
+        return 301 $redirect_scheme://$unfurl_host/;
+    }
+
+    location = /parsel {
+        return 301 $redirect_scheme://$parsel_host/;
+    }
+    location /parsel/ {
+        return 301 $redirect_scheme://$parsel_host/;
+    }
+
+    location = /stegg {
+        return 301 $redirect_scheme://$stegg_host/;
+    }
+    location /stegg/ {
+        return 301 $redirect_scheme://$stegg_host/;
+    }
+
+    location = /network {
+        return 301 $redirect_scheme://$network_host/;
+    }
+    location /network/ {
+        return 301 $redirect_scheme://$network_host/;
+    }
+
+    location = /pb {
+        return 301 $redirect_scheme://$pb_host/;
+    }
+    location /pb/ {
+        return 301 $redirect_scheme://$pb_host/;
+    }
+
+    # CyberChef remains path-based on the tools host.
+    location = /cyberchef {
+        return 301 $redirect_scheme://$http_host/cyberchef/;
+    }
+    location /cyberchef/ {
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_pass http://cyberchef:8080/;
+    }
+}
+
+# -- unfurl.tools.*: Unfurl at / ---------------------------------------------
+server {
+    listen 80;
+    server_name unfurl.tools.${ROOT_DOMAIN} unfurl.tools.localtest.me;
+
+    access_log /dev/stdout;
+    error_log  /dev/stderr warn;
+
+    location / {
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_pass http://unfurl:5000/;
+    }
+}
+
+# -- omni.tools.*: Omni Tools at / -------------------------------------------
+server {
+    listen 80;
+    server_name omni.tools.${ROOT_DOMAIN} omni.tools.localtest.me;
+
+    access_log /dev/stdout;
+    error_log  /dev/stderr warn;
+
+    location / {
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_pass http://omni-tools:80/;
+    }
+}
+
+# -- it.tools.*: IT Tools at / -----------------------------------------------
+server {
+    listen 80;
+    server_name it.tools.${ROOT_DOMAIN} it.tools.localtest.me;
+
+    access_log /dev/stdout;
+    error_log  /dev/stderr warn;
+
+    location / {
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_pass http://it-tools:80/;
+    }
+}
+
+# -- parsel.tools.*: Parsel at / ---------------------------------------------
+server {
+    listen 80;
+    server_name parsel.tools.${ROOT_DOMAIN} parsel.tools.localtest.me;
+
+    access_log /dev/stdout;
+    error_log  /dev/stderr warn;
+
+    location / {
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_pass http://parsel:80/;
+    }
+}
+
+# -- stegg.tools.*: Stegg at / -----------------------------------------------
+server {
+    listen 80;
+    server_name stegg.tools.${ROOT_DOMAIN} stegg.tools.localtest.me;
+
+    access_log /dev/stdout;
+    error_log  /dev/stderr warn;
+
+    location / {
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_pass http://stegg:80/;
+    }
+}
+
+# -- network.tools.*: Network at / -------------------------------------------
+server {
+    listen 80;
+    server_name network.tools.${ROOT_DOMAIN} network.tools.localtest.me;
+
+    access_log /dev/stdout;
+    error_log  /dev/stderr warn;
+
+    location / {
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_pass http://network:3000/;
+    }
+}
+
+# -- pb.tools.*: PB at / with larger uploads ---------------------------------
+server {
+    listen 80;
+    server_name pb.tools.${ROOT_DOMAIN} pb.tools.localtest.me;
+
+    client_max_body_size 100m;
+
+    access_log /dev/stdout;
+    error_log  /dev/stderr warn;
+
+    location / {
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_pass http://pb:8080/;
+    }
+}
