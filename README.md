@@ -66,10 +66,6 @@ This is the primary deployment mode for the repository.
 
 3. Start the production stack with the base Compose file.
 
-   ```powershell
-   docker compose up -d
-   ```
-
    ```bash
    docker compose up -d
    ```
@@ -86,10 +82,6 @@ This is the primary deployment mode for the repository.
 
 4. Rebuild the repo-local images whenever you change one of those Dockerfiles or
    want to refresh the pinned upstream sources.
-
-   ```powershell
-   docker compose build parsel stegg unfurl
-   ```
 
    ```bash
    docker compose build parsel stegg unfurl
@@ -123,6 +115,38 @@ This is the primary deployment mode for the repository.
 | `network.tools.domain.com` | `/` | Network |
 | `pb.tools.domain.com` | `/` | PB / MicroBin |
 
+### Production network flow
+
+```mermaid
+flowchart LR
+    User["Browser / User"] --> DNS["DNS records<br/>tools.domain.com<br/>*.tools.domain.com"]
+    DNS --> NPM["Nginx Proxy Manager<br/>manual proxy hosts + certs"]
+    NPM --> Landing["toolkit-landing<br/>nginx:alpine<br/>networks: nginx-proxy + toolkit-internal"]
+
+    Landing --> Root["tools.domain.com/ <br/>landing page"]
+    Landing --> CyberChef["tools.domain.com/cyberchef/ <br/>CyberChef"]
+    Landing --> Omni["omni.tools.domain.com <br/>Omni Tools"]
+    Landing --> IT["it.tools.domain.com <br/>IT Tools"]
+    Landing --> Unfurl["unfurl.tools.domain.com <br/>Unfurl"]
+    Landing --> Parsel["parsel.tools.domain.com <br/>Parsel"]
+    Landing --> Stegg["stegg.tools.domain.com <br/>Stegg"]
+    Landing --> Network["network.tools.domain.com <br/>Network"]
+    Landing --> PB["pb.tools.domain.com <br/>PB / MicroBin"]
+
+    subgraph Internal["toolkit-internal network only"]
+        CyberChef
+        Omni
+        IT
+        Unfurl
+        Parsel
+        Stegg
+        Network
+        PB
+    end
+
+    PB --> PBData["pb-data volume"]
+```
+
 - Recommended NPM settings for each proxy host:
   - Forward hostname: `toolkit-landing`
   - Forward port: `80`
@@ -152,19 +176,11 @@ port `8080`.
 
 2. Start the local stack with the override file:
 
-   ```powershell
-   docker compose -f docker-compose.yml -f docker-compose.local.yml up -d
-   ```
-
    ```bash
    docker compose -f docker-compose.yml -f docker-compose.local.yml up -d
    ```
 
 3. If you need to rebuild the repo-local images locally:
-
-   ```powershell
-   docker compose -f docker-compose.yml -f docker-compose.local.yml build parsel stegg unfurl
-   ```
 
    ```bash
    docker compose -f docker-compose.yml -f docker-compose.local.yml build parsel stegg unfurl
