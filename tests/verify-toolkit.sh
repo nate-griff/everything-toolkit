@@ -70,7 +70,9 @@ test_scaffold() {
         ".env.example"
         "docker-compose.yml"
         "landing/index.html"
-        "landing/nginx.conf"
+        "landing/nginx.conf.template"
+        "parsel/Dockerfile"
+        "stegg/Dockerfile"
         "unfurl/Dockerfile"
         "unfurl/unfurl.ini"
         "README.md"
@@ -100,17 +102,18 @@ test_compose() {
     [[ -e "$(repo_path "docker-compose.local.yml")" ]] || fail "Expected local override file 'docker-compose.local.yml' to exist."
 
     local tmp_dir
-    tmp_dir="$(mktemp -d)"
+    tmp_dir="$REPO_ROOT/.verify-toolkit-compose.$$"
+    mkdir -p "$tmp_dir"
     trap 'rm -rf "$tmp_dir"' RETURN
 
     compose_config_json "docker-compose.yml" > "$tmp_dir/base.json"
     compose_config_json "docker-compose.yml" "docker-compose.local.yml" > "$tmp_dir/local.json"
 
-    "$PYTHON_BIN" - "$tmp_dir/base.json" "$tmp_dir/local.json" <<'PY'
+    "$PYTHON_BIN" - "$tmp_dir/base.json" "$tmp_dir/local.json" "$(repo_path "unfurl/Dockerfile")" <<'PY'
 import json
 import sys
 
-base_path, local_path = sys.argv[1], sys.argv[2]
+base_path, local_path, unfurl_dockerfile_path = sys.argv[1], sys.argv[2], sys.argv[3]
 
 with open(base_path, encoding="utf-8") as handle:
     base_config = json.load(handle)
@@ -125,13 +128,14 @@ def assert_true(condition, message):
 
 
 base_services = base_config["services"]
-for service_name in ("toolkit-landing", "omni-tools", "cyberchef", "it-tools", "unfurl"):
+for service_name in ("toolkit-landing", "omni-tools", "cyberchef", "it-tools", "parsel", "stegg", "network", "pb", "unfurl"):
     service = base_services.get(service_name)
     assert_true(service is not None, f"Expected service '{service_name}' in docker-compose.yml.")
     assert_true(service.get("restart") == "unless-stopped", f"Expected '{service_name}' to use restart: unless-stopped.")
     assert_true(not service.get("ports"), f"Expected '{service_name}' to have no host ports in docker-compose.yml.")
 
 assert_true(base_services["toolkit-landing"].get("image") == "nginx:alpine", "Expected toolkit-landing to use nginx:alpine.")
+assert_true(str(base_services["toolkit-landing"].get("environment", {}).get("ROOT_DOMAIN", "")).strip() != "", "Expected toolkit-landing to receive ROOT_DOMAIN from the environment.")
 assert_true(base_services["cyberchef"].get("image") == "ghcr.io/gchq/cyberchef:latest", "Expected cyberchef to use the official ghcr.io/gchq/cyberchef:latest image.")
 assert_true(not base_services["it-tools"].get("environment", {}).get("BASE_URL"), "Expected it-tools to have no BASE_URL set (it now runs at /).")
 assert_true(str(base_services["unfurl"].get("build", {}).get("context", "")).replace("\\\\", "/").endswith("/unfurl"), "Expected unfurl to build from the local unfurl directory.")
@@ -140,7 +144,7 @@ assert_true(base_services["unfurl"].get("build", {}).get("dockerfile") == "Docke
 toolkit_networks = sorted(base_services["toolkit-landing"]["networks"].keys())
 assert_true(",".join(toolkit_networks) == "nginx-proxy,toolkit-internal", "Expected toolkit-landing on both networks.")
 
-for service_name in ("omni-tools", "cyberchef", "it-tools", "unfurl"):
+for service_name in ("omni-tools", "cyberchef", "it-tools", "parsel", "stegg", "network", "pb", "unfurl"):
     service_networks = sorted(base_services[service_name]["networks"].keys())
     assert_true(",".join(service_networks) == "toolkit-internal", f"Expected '{service_name}' on toolkit-internal only.")
 
@@ -149,12 +153,18 @@ assert_true(base_config["networks"]["toolkit-internal"].get("driver") == "bridge
 
 toolkit_volumes = base_services["toolkit-landing"].get("volumes", [])
 index_mount = next((volume for volume in toolkit_volumes if volume.get("target") == "/usr/share/nginx/html/index.html"), None)
+template_mount = next((volume for volume in toolkit_volumes if volume.get("target") == "/etc/nginx/templates/default.conf.template"), None)
 nginx_mount = next((volume for volume in toolkit_volumes if volume.get("target") == "/etc/nginx/conf.d/default.conf"), None)
 assert_true(index_mount is not None and index_mount.get("read_only"), "Expected toolkit-landing to mount landing/index.html read-only.")
-assert_true(nginx_mount is not None and nginx_mount.get("read_only"), "Expected toolkit-landing to mount landing/nginx.conf read-only.")
+assert_true(template_mount is not None and template_mount.get("read_only"), "Expected toolkit-landing to mount an nginx template read-only.")
+assert_true(nginx_mount is None, "Expected toolkit-landing to stop mounting a static landing/nginx.conf into conf.d/default.conf.")
 unfurl_mount = next((volume for volume in base_services["unfurl"].get("volumes", []) if volume.get("target") == "/unfurl/unfurl.ini"), None)
 assert_true(unfurl_mount is not None and unfurl_mount.get("read_only"), "Expected unfurl to mount unfurl/unfurl.ini read-only.")
-with open(repo_path("unfurl/Dockerfile"), encoding="utf-8") as handle:
+pb_mount = next((volume for volume in base_services["pb"].get("volumes", []) if volume.get("target") == "/app/microbin_data"), None)
+assert_true(pb_mount is not None, "Expected pb to mount persistent storage at /app/microbin_data.")
+assert_true(str(base_services["network"].get("environment", {}).get("PORT", "")) == "3000", "Expected network to expose its upstream app on port 3000.")
+assert_true(str(base_services["pb"].get("environment", {}).get("MICROBIN_PORT", "")) == "8080", "Expected pb to expose MicroBin on port 8080.")
+with open(unfurl_dockerfile_path, encoding="utf-8") as handle:
     unfurl_dockerfile = handle.read()
 assert_true("git clone https://github.com/RyanDFIR/unfurl /unfurl" in unfurl_dockerfile, "Expected unfurl Dockerfile to clone the RyanDFIR/unfurl repository during build.")
 assert_true("git checkout 2d2dac375433d2a7fbeede2d25c5f19b68d4d244" in unfurl_dockerfile, "Expected unfurl Dockerfile to pin the upstream checkout to the planned commit.")
@@ -172,7 +182,7 @@ localhost_port = next(
 assert_true(localhost_port is not None, "Expected local override to expose toolkit-landing on 8080.")
 assert_true(local_config["networks"]["nginx-proxy"].get("external") is not True, "Expected local override to avoid requiring a pre-existing external nginx-proxy network.")
 
-for service_name in ("omni-tools", "cyberchef", "it-tools", "unfurl"):
+for service_name in ("omni-tools", "cyberchef", "it-tools", "parsel", "stegg", "network", "pb", "unfurl"):
     assert_true(not local_services[service_name].get("ports"), f"Expected '{service_name}' to remain unexposed in local override.")
 PY
 }
@@ -181,7 +191,7 @@ test_proxy() {
     assert_required_command docker
 
     local nginx_config_path
-    nginx_config_path="$(repo_path "landing/nginx.conf")"
+    nginx_config_path="$(repo_path "landing/nginx.conf.template")"
 
     "$PYTHON_BIN" - "$nginx_config_path" <<'PY'
 import re
@@ -199,23 +209,42 @@ def assert_true(condition, message):
 
 patterns = (
     (r'(?ms)map \$http_x_forwarded_proto \$redirect_scheme \{.*default \$http_x_forwarded_proto;.*""\s+\$scheme;.*\}', "Expected nginx config to map forwarded HTTPS to a redirect-safe scheme."),
+    (r'ROOT_DOMAIN', "Expected nginx template to use ROOT_DOMAIN instead of a hard-coded production domain."),
+    (r'n8-g\.com', None),
     (r'map \$http_host \$omni_host', r"Expected nginx config to define an \$omni_host map for subdomain-aware redirects."),
     (r'map \$http_host \$it_host', r"Expected nginx config to define an \$it_host map for subdomain-aware redirects."),
     (r'map \$http_host \$unfurl_host', r"Expected nginx config to define an \$unfurl_host map for subdomain-aware redirects."),
+    (r'map \$http_host \$parsel_host', r"Expected nginx config to define an \$parsel_host map for subdomain-aware redirects."),
+    (r'map \$http_host \$stegg_host', r"Expected nginx config to define an \$stegg_host map for subdomain-aware redirects."),
+    (r'map \$http_host \$network_host', r"Expected nginx config to define an \$network_host map for subdomain-aware redirects."),
+    (r'map \$http_host \$pb_host', r"Expected nginx config to define an \$pb_host map for subdomain-aware redirects."),
     (r'(?m)^\s*listen\s+80;', "Expected nginx to listen on port 80."),
-    (r'server_name\s+tools\.n8-g\.com\s+tools\.localtest\.me;', "Expected tools server block with server_name tools.n8-g.com tools.localtest.me."),
-    (r'server_name\s+omni\.tools\.n8-g\.com\s+omni\.tools\.localtest\.me;', "Expected omni.tools server block with server_name omni.tools.n8-g.com omni.tools.localtest.me."),
-    (r'server_name\s+it\.tools\.n8-g\.com\s+it\.tools\.localtest\.me;', "Expected it.tools server block with server_name it.tools.n8-g.com it.tools.localtest.me."),
-    (r'server_name\s+unfurl\.tools\.n8-g\.com\s+unfurl\.tools\.localtest\.me;', "Expected unfurl.tools server block with server_name unfurl.tools.n8-g.com unfurl.tools.localtest.me."),
+    (r'server_name\s+tools\.\$\{?ROOT_DOMAIN\}?\s+tools\.localtest\.me;', "Expected tools server block to derive its production domain from ROOT_DOMAIN."),
+    (r'server_name\s+omni\.tools\.\$\{?ROOT_DOMAIN\}?\s+omni\.tools\.localtest\.me;', "Expected omni.tools server block to derive its production domain from ROOT_DOMAIN."),
+    (r'server_name\s+it\.tools\.\$\{?ROOT_DOMAIN\}?\s+it\.tools\.localtest\.me;', "Expected it.tools server block to derive its production domain from ROOT_DOMAIN."),
+    (r'server_name\s+unfurl\.tools\.\$\{?ROOT_DOMAIN\}?\s+unfurl\.tools\.localtest\.me;', "Expected unfurl.tools server block to derive its production domain from ROOT_DOMAIN."),
+    (r'server_name\s+parsel\.tools\.\$\{?ROOT_DOMAIN\}?\s+parsel\.tools\.localtest\.me;', "Expected parsel.tools server block to derive its production domain from ROOT_DOMAIN."),
+    (r'server_name\s+stegg\.tools\.\$\{?ROOT_DOMAIN\}?\s+stegg\.tools\.localtest\.me;', "Expected stegg.tools server block to derive its production domain from ROOT_DOMAIN."),
+    (r'server_name\s+network\.tools\.\$\{?ROOT_DOMAIN\}?\s+network\.tools\.localtest\.me;', "Expected network.tools server block to derive its production domain from ROOT_DOMAIN."),
+    (r'server_name\s+pb\.tools\.\$\{?ROOT_DOMAIN\}?\s+pb\.tools\.localtest\.me;', "Expected pb.tools server block to derive its production domain from ROOT_DOMAIN."),
     (r'(?m)^\s*root\s+/usr/share/nginx/html;', "Expected nginx root to serve the landing page."),
     (r'(?m)^\s*index\s+index\.html;', "Expected nginx to serve index.html."),
     (r'(?ms)location\s+/omni/\s*\{.*return\s+301\s+\$redirect_scheme://\$omni_host/;', r"Expected legacy /omni/ redirect to \$omni_host subdomain using \$redirect_scheme."),
     (r'(?ms)location\s+/it-tools/\s*\{.*return\s+301\s+\$redirect_scheme://\$it_host/;', r"Expected legacy /it-tools/ redirect to \$it_host subdomain using \$redirect_scheme."),
     (r'(?ms)location\s+/unfurl/\s*\{.*return\s+301\s+\$redirect_scheme://\$unfurl_host/;', r"Expected legacy /unfurl/ redirect to \$unfurl_host subdomain using \$redirect_scheme."),
+    (r'(?ms)location\s+/parsel/\s*\{.*return\s+301\s+\$redirect_scheme://\$parsel_host/;', r"Expected legacy /parsel/ redirect to \$parsel_host subdomain using \$redirect_scheme."),
+    (r'(?ms)location\s+/stegg/\s*\{.*return\s+301\s+\$redirect_scheme://\$stegg_host/;', r"Expected legacy /stegg/ redirect to \$stegg_host subdomain using \$redirect_scheme."),
+    (r'(?ms)location\s+/network/\s*\{.*return\s+301\s+\$redirect_scheme://\$network_host/;', r"Expected legacy /network/ redirect to \$network_host subdomain using \$redirect_scheme."),
+    (r'(?ms)location\s+/pb/\s*\{.*return\s+301\s+\$redirect_scheme://\$pb_host/;', r"Expected legacy /pb/ redirect to \$pb_host subdomain using \$redirect_scheme."),
     (r'(?ms)location\s+/cyberchef/\s*\{.*proxy_pass\s+http://cyberchef:8080/;', "Expected CyberChef proxy block at /cyberchef/ targeting http://cyberchef:8080/."),
     (r'proxy_pass\s+http://unfurl:5000/;', "Expected proxy_pass to http://unfurl:5000/ in the unfurl.tools server block."),
     (r'proxy_pass\s+http://omni-tools:80/;', "Expected proxy_pass to http://omni-tools:80/ in the omni.tools server block."),
     (r'proxy_pass\s+http://it-tools:80/;', "Expected proxy_pass to http://it-tools:80/ in the it.tools server block."),
+    (r'proxy_pass\s+http://parsel:\d+/;', "Expected proxy_pass to http://parsel:<port>/ in the parsel.tools server block."),
+    (r'proxy_pass\s+http://stegg:\d+/;', "Expected proxy_pass to http://stegg:<port>/ in the stegg.tools server block."),
+    (r'proxy_pass\s+http://network:3000/;', "Expected proxy_pass to http://network:3000/ in the network.tools server block."),
+    (r'proxy_pass\s+http://pb:8080/;', "Expected proxy_pass to http://pb:8080/ in the pb.tools server block."),
+    (r'(?m)^\s*client_max_body_size\s+100m;', "Expected pb.tools server block to raise client_max_body_size for uploads."),
     (r'proxy_set_header\s+Host\s+\$host;', r"Expected nginx config to include proxy_set_header directive 'proxy_set_header\s+Host\s+\$host;'."),
     (r'proxy_set_header\s+X-Real-IP\s+\$remote_addr;', r"Expected nginx config to include proxy_set_header directive 'proxy_set_header\s+X-Real-IP\s+\$remote_addr;'."),
     (r'proxy_set_header\s+X-Forwarded-For\s+\$proxy_add_x_forwarded_for;', r"Expected nginx config to include proxy_set_header directive 'proxy_set_header\s+X-Forwarded-For\s+\$proxy_add_x_forwarded_for;'."),
@@ -225,17 +254,25 @@ patterns = (
 )
 
 for pattern, message in patterns:
-    assert_true(re.search(pattern, nginx_config) is not None, message)
+    if message is None:
+        assert_true(re.search(pattern, nginx_config) is None, f"Expected nginx template to avoid hard-coded '{pattern}' references.")
+    else:
+        assert_true(re.search(pattern, nginx_config) is not None, message)
 PY
 
     docker run --rm \
+        -e ROOT_DOMAIN=example.com \
         --add-host omni-tools:127.0.0.1 \
         --add-host cyberchef:127.0.0.1 \
         --add-host it-tools:127.0.0.1 \
+        --add-host parsel:127.0.0.1 \
+        --add-host stegg:127.0.0.1 \
+        --add-host network:127.0.0.1 \
+        --add-host pb:127.0.0.1 \
         --add-host unfurl:127.0.0.1 \
-        -v "$(docker_host_path "$REPO_ROOT")/landing/nginx.conf:/etc/nginx/conf.d/default.conf:ro" \
+        -v "$(docker_host_path "$REPO_ROOT")/landing/nginx.conf.template:/etc/nginx/templates/default.conf.template:ro" \
         nginx:alpine \
-        nginx -t
+        sh -c 'envsubst '\''$ROOT_DOMAIN'\'' < /etc/nginx/templates/default.conf.template > /etc/nginx/conf.d/default.conf && nginx -t'
 }
 
 test_landing() {
@@ -265,6 +302,10 @@ for link in (
     {"label": "Omni Tools", "href": "/omni/", "description": "General-purpose browser tools"},
     {"label": "CyberChef", "href": "/cyberchef/", "description": "Encoding, decoding, encryption, data analysis"},
     {"label": "IT Tools", "href": "/it-tools/", "description": "Developer utilities: tokens, hashes, formatters"},
+    {"label": "Parsel", "href": "/parsel/", "description": "Parse and inspect structured data quickly"},
+    {"label": "Stegg", "href": "/stegg/", "description": "Steganography workflows and payload inspection"},
+    {"label": "Network", "href": "/network/", "description": "Network utilities and troubleshooting helpers"},
+    {"label": "PB", "href": "/pb/", "description": "Paste and upload larger files in a dedicated subdomain"},
     {"label": "Unfurl", "href": "/unfurl/", "description": "URL decoding, parsing, and graph visualization"},
 ):
     pattern = (
@@ -308,12 +349,13 @@ for snippet in (
     "http://tools.localtest.me:8080/",
     "http://omni.tools.localtest.me:8080/",
     "http://it.tools.localtest.me:8080/",
+    "http://parsel.tools.localtest.me:8080/",
+    "http://stegg.tools.localtest.me:8080/",
+    "http://network.tools.localtest.me:8080/",
+    "http://pb.tools.localtest.me:8080/",
     "http://unfurl.tools.localtest.me:8080/",
     "http://tools.localtest.me:8080/cyberchef/",
-    "tools.n8-g.com",
-    "omni.tools.n8-g.com",
-    "it.tools.n8-g.com",
-    "unfurl.tools.n8-g.com",
+    "ROOT_DOMAIN",
     "toolkit-landing",
     "docker compose -f docker-compose.yml -f docker-compose.local.yml build unfurl",
     "git clone https://github.com/RyanDFIR/unfurl /unfurl",
@@ -324,60 +366,60 @@ for snippet in (
     "docker ps",
     "docker network inspect nginx-proxy",
     "Invoke-WebRequest http://tools.localtest.me:8080/",
+    "Invoke-WebRequest http://parsel.tools.localtest.me:8080/",
     "Invoke-WebRequest http://unfurl.tools.localtest.me:8080/",
     "curl -I http://tools.localtest.me:8080/",
+    "curl -I http://parsel.tools.localtest.me:8080/",
     "curl -I http://unfurl.tools.localtest.me:8080/",
 ):
     assert_true(re.search(re.escape(snippet), readme) is not None, f"Expected README to mention '{snippet}'.")
 PY
+
+    if grep -Eqi 'n8-g\.com' "$readme_path"; then
+        fail "Expected README to stop hard-coding n8-g.com."
+    fi
 }
 
 test_runtime() {
-    assert_required_command curl
+    local curl_cmd="curl"
+    local curl_null_device="/dev/null"
+    if command -v curl.exe >/dev/null 2>&1; then
+        curl_cmd="curl.exe"
+        curl_null_device="NUL"
+    else
+        assert_required_command curl
+    fi
 
     local landing_html
-    landing_html="$(curl -fsS http://tools.localtest.me:8080/)"
+    landing_html="$("$curl_cmd" -fsS http://tools.localtest.me:8080/)"
     grep -Eiq '<title>[[:space:]]*Tools[[:space:]]*</title>' <<<"$landing_html" || fail "Expected tools.localtest.me:8080/ to serve the landing page."
 
     local cyberchef_html
-    cyberchef_html="$(curl -fsS http://tools.localtest.me:8080/cyberchef/)"
+    cyberchef_html="$("$curl_cmd" -fsS http://tools.localtest.me:8080/cyberchef/)"
     grep -iq 'cyberchef' <<<"$cyberchef_html" || fail "Expected tools.localtest.me:8080/cyberchef/ to return CyberChef content."
 
-    local omni_html
-    omni_html="$(curl -fsS http://omni.tools.localtest.me:8080/)"
-    [[ -n "${omni_html//[[:space:]]/}" ]] && grep -iq '<html' <<<"$omni_html" || fail "Expected omni.tools.localtest.me:8080/ to return an HTML page."
+    for entry in \
+        "Omni Tools|omni.tools.localtest.me|/omni/|<html" \
+        "IT Tools|it.tools.localtest.me|/it-tools/|<html" \
+        "Parsel|parsel.tools.localtest.me|/parsel/|<html" \
+        "Stegg|stegg.tools.localtest.me|/stegg/|<html" \
+        "Network|network.tools.localtest.me|/network/|<html" \
+        "PB|pb.tools.localtest.me|/pb/|<html" \
+        "Unfurl|unfurl.tools.localtest.me|/unfurl/|<title>[[:space:]]*unfurl[[:space:]]*</title>"
+    do
+        IFS='|' read -r name host redirect_path html_pattern <<<"$entry"
+        local html
+        html="$("$curl_cmd" -fsS "http://${host}:8080/")"
+        [[ -n "${html//[[:space:]]/}" ]] && grep -Eiq "$html_pattern" <<<"$html" || fail "Expected ${host}:8080/ to return the ${name} app."
 
-    local it_html
-    it_html="$(curl -fsS http://it.tools.localtest.me:8080/)"
-    [[ -n "${it_html//[[:space:]]/}" ]] && grep -iq '<html' <<<"$it_html" || fail "Expected it.tools.localtest.me:8080/ to return an HTML page."
+        local redirect_code
+        redirect_code="$("$curl_cmd" -s -o "$curl_null_device" -w '%{http_code}' "http://tools.localtest.me:8080${redirect_path}")"
+        [[ "$redirect_code" == "301" ]] || fail "Expected tools.localtest.me:8080${redirect_path} to return 301 redirect to the ${name} subdomain."
 
-    local unfurl_html
-    unfurl_html="$(curl -fsS http://unfurl.tools.localtest.me:8080/)"
-    grep -Eiq '<title>[[:space:]]*unfurl[[:space:]]*</title>' <<<"$unfurl_html" || fail "Expected unfurl.tools.localtest.me:8080/ to return the Unfurl UI."
-
-    local omni_redirect_code
-    omni_redirect_code="$(curl -s -o /dev/null -w '%{http_code}' http://tools.localtest.me:8080/omni/)"
-    [[ "$omni_redirect_code" == "301" ]] || fail "Expected tools.localtest.me:8080/omni/ to return 301 redirect to the omni subdomain."
-
-    local omni_redirect_headers
-    omni_redirect_headers="$(curl -sI http://tools.localtest.me:8080/omni/)"
-    grep -Eiq '^location:[[:space:]]*http://omni\.tools\.localtest\.me:8080/' <<<"$omni_redirect_headers" || fail "Expected /omni/ redirect Location to point to omni.tools.localtest.me:8080/."
-
-    local it_redirect_code
-    it_redirect_code="$(curl -s -o /dev/null -w '%{http_code}' http://tools.localtest.me:8080/it-tools/)"
-    [[ "$it_redirect_code" == "301" ]] || fail "Expected tools.localtest.me:8080/it-tools/ to return 301 redirect to the it subdomain."
-
-    local it_redirect_headers
-    it_redirect_headers="$(curl -sI http://tools.localtest.me:8080/it-tools/)"
-    grep -Eiq '^location:[[:space:]]*http://it\.tools\.localtest\.me:8080/' <<<"$it_redirect_headers" || fail "Expected /it-tools/ redirect Location to point to it.tools.localtest.me:8080/."
-
-    local unfurl_redirect_code
-    unfurl_redirect_code="$(curl -s -o /dev/null -w '%{http_code}' http://tools.localtest.me:8080/unfurl/)"
-    [[ "$unfurl_redirect_code" == "301" ]] || fail "Expected tools.localtest.me:8080/unfurl/ to return 301 redirect to the Unfurl subdomain."
-
-    local unfurl_redirect_headers
-    unfurl_redirect_headers="$(curl -sI http://tools.localtest.me:8080/unfurl/)"
-    grep -Eiq '^location:[[:space:]]*http://unfurl\.tools\.localtest\.me:8080/' <<<"$unfurl_redirect_headers" || fail "Expected /unfurl/ redirect Location to point to unfurl.tools.localtest.me:8080/."
+        local redirect_headers
+        redirect_headers="$("$curl_cmd" -sI "http://tools.localtest.me:8080${redirect_path}")"
+        grep -Eiq "^location:[[:space:]]*http://${host}:8080/" <<<"$redirect_headers" || fail "Expected ${redirect_path} redirect Location to point to ${host}:8080/."
+    done
 }
 
 case "$suite" in

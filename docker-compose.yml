@@ -4,9 +4,10 @@ services:
     restart: unless-stopped
     environment:
       TZ: ${TZ}
+      ROOT_DOMAIN: ${ROOT_DOMAIN:-domain.com}
     volumes:
       - ./landing/index.html:/usr/share/nginx/html/index.html:ro
-      - ./landing/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./landing/nginx.conf.template:/etc/nginx/templates/default.conf.template:ro
     networks:
       - nginx-proxy
       - toolkit-internal
@@ -35,6 +36,62 @@ services:
     networks:
       - toolkit-internal
 
+  parsel:
+    build:
+      context: ./parsel
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ}
+    networks:
+      - toolkit-internal
+
+  stegg:
+    build:
+      context: ./stegg
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ}
+    networks:
+      - toolkit-internal
+
+  network:
+    image: lissy93/networking-toolbox:latest
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ}
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 3000
+    expose:
+      - "3000"
+    networks:
+      - toolkit-internal
+
+  pb:
+    image: danielszabo99/microbin:latest
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ}
+      MICROBIN_PORT: 8080
+      MICROBIN_BIND: 0.0.0.0
+      MICROBIN_PUBLIC_PATH: ${MICROBIN_PUBLIC_PATH:-https://pb.tools.${ROOT_DOMAIN:-domain.com}}
+      MICROBIN_ADMIN_USERNAME: ${MICROBIN_ADMIN_USERNAME:-change-me-admin}
+      MICROBIN_ADMIN_PASSWORD: ${MICROBIN_ADMIN_PASSWORD:-change-me-admin-password}
+      MICROBIN_PRIVATE: ${MICROBIN_PRIVATE:-true}
+      MICROBIN_NO_LISTING: ${MICROBIN_NO_LISTING:-true}
+      MICROBIN_EDITABLE: ${MICROBIN_EDITABLE:-false}
+      MICROBIN_DISABLE_TELEMETRY: ${MICROBIN_DISABLE_TELEMETRY:-true}
+      MICROBIN_DISABLE_UPDATE_CHECKING: ${MICROBIN_DISABLE_UPDATE_CHECKING:-true}
+      MICROBIN_LIST_SERVER: ${MICROBIN_LIST_SERVER:-false}
+    expose:
+      - "8080"
+    volumes:
+      - pb-data:/app/microbin_data
+    networks:
+      - toolkit-internal
+
   unfurl:
     build:
       context: ./unfurl
@@ -52,3 +109,6 @@ networks:
     external: true
   toolkit-internal:
     driver: bridge
+
+volumes:
+  pb-data:
