@@ -119,14 +119,22 @@ This is the primary deployment mode for the repository.
 
 ```mermaid
 flowchart LR
-    User["Browser / User"] --> DNS["DNS records<br/>tools.domain.com<br/>*.tools.domain.com"]
+    LocalUser["Home network browser"] --> LocalDNS["Router DNS<br/>AdGuard Home / Pi-hole / local DNS"]
+    LocalDNS -->|"tools.domain.com<br/>*.tools.domain.com -> NPM"| NPM
 
-    subgraph Proxy["nginx-proxy network (external)"]
-        NPM["Nginx Proxy Manager<br/>manual proxy hosts + certs"]
+    RemoteUser["Remote browser"] --> CFDNS["Cloudflare DNS<br/>public record: pb.tools.domain.com"]
+    CFDNS --> ZT["Cloudflare Zero Trust<br/>auth / firewall policies"]
+    ZT --> Tunnel["cloudflared tunnel<br/>joined to nginx-proxy network"]
+    Tunnel -->|"pb.tools.domain.com only"| NPM
+
+    NPMCert["NPM cert automation<br/>Let's Encrypt + Cloudflare API token"] -.-> NPM
+
+    subgraph Proxy["nginx-proxy network"]
+        NPM["Nginx Proxy Manager"]
         Landing["toolkit-landing<br/>nginx:alpine"]
     end
 
-    subgraph Internal["toolkit-internal network (private bridge)"]
+    subgraph Internal["toolkit-internal network"]
         Root["Landing page<br/>tools.domain.com/"]
         CyberChef["CyberChef<br/>tools.domain.com/cyberchef/"]
         Omni["Omni Tools<br/>omni.tools.domain.com"]
@@ -138,8 +146,8 @@ flowchart LR
         PB["PB / MicroBin<br/>pb.tools.domain.com"]
     end
 
-    DNS --> NPM
-    NPM -->|"all public hosts forward to toolkit-landing:80"| Landing
+    NPM -->|"all local domains forward to toolkit-landing:80"| Landing
+    NPM -->|"optional public host forward<br/>pb.tools.domain.com"| Landing
 
     Landing -->|"serves /"| Root
     Landing -->|"proxies /cyberchef/"| CyberChef
@@ -154,12 +162,17 @@ flowchart LR
     PB --> PBData["pb-data volume"]
 ```
 
-- **`nginx-proxy`** is the outer network shared with Nginx Proxy Manager. Only
-  `toolkit-landing` joins it, so no tool container is directly exposed there.
+- **Local-only path:** your home router DNS can resolve `tools.domain.com` and
+  all of the `*.tools.domain.com` hosts directly to **NPM**, so the full stack
+  works internally without exposing every hostname to the public internet.
+- **Optional public path:** you can expose only `pb.tools.domain.com` through
+  **Cloudflare DNS + Zero Trust + cloudflared**, while keeping the rest of the
+  domains local-only.
+- **`nginx-proxy`** is the shared ingress network. NPM, `toolkit-landing`, and
+  an optional `cloudflared` tunnel can all sit there; the actual app containers
+  do not.
 - **`toolkit-internal`** is the private bridge network where `toolkit-landing`
-  can reach the actual services. Domain and path decisions happen in
-  `toolkit-landing`, then traffic is proxied across this internal network to
-  the right container.
+  reaches the real services after it has already matched the incoming host/path.
 
 - Recommended NPM settings for each proxy host:
   - Forward hostname: `toolkit-landing`
