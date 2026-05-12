@@ -120,32 +120,46 @@ This is the primary deployment mode for the repository.
 ```mermaid
 flowchart LR
     User["Browser / User"] --> DNS["DNS records<br/>tools.domain.com<br/>*.tools.domain.com"]
-    DNS --> NPM["Nginx Proxy Manager<br/>manual proxy hosts + certs"]
-    NPM --> Landing["toolkit-landing<br/>nginx:alpine<br/>networks: nginx-proxy + toolkit-internal"]
 
-    Landing --> Root["tools.domain.com/ <br/>landing page"]
-    Landing --> CyberChef["tools.domain.com/cyberchef/ <br/>CyberChef"]
-    Landing --> Omni["omni.tools.domain.com <br/>Omni Tools"]
-    Landing --> IT["it.tools.domain.com <br/>IT Tools"]
-    Landing --> Unfurl["unfurl.tools.domain.com <br/>Unfurl"]
-    Landing --> Parsel["parsel.tools.domain.com <br/>Parsel"]
-    Landing --> Stegg["stegg.tools.domain.com <br/>Stegg"]
-    Landing --> Network["network.tools.domain.com <br/>Network"]
-    Landing --> PB["pb.tools.domain.com <br/>PB / MicroBin"]
-
-    subgraph Internal["toolkit-internal network only"]
-        CyberChef
-        Omni
-        IT
-        Unfurl
-        Parsel
-        Stegg
-        Network
-        PB
+    subgraph Proxy["nginx-proxy network (external)"]
+        NPM["Nginx Proxy Manager<br/>manual proxy hosts + certs"]
+        Landing["toolkit-landing<br/>nginx:alpine"]
     end
+
+    subgraph Internal["toolkit-internal network (private bridge)"]
+        Root["Landing page<br/>tools.domain.com/"]
+        CyberChef["CyberChef<br/>tools.domain.com/cyberchef/"]
+        Omni["Omni Tools<br/>omni.tools.domain.com"]
+        IT["IT Tools<br/>it.tools.domain.com"]
+        Unfurl["Unfurl<br/>unfurl.tools.domain.com"]
+        Parsel["Parsel<br/>parsel.tools.domain.com"]
+        Stegg["Stegg<br/>stegg.tools.domain.com"]
+        Network["Network<br/>network.tools.domain.com"]
+        PB["PB / MicroBin<br/>pb.tools.domain.com"]
+    end
+
+    DNS --> NPM
+    NPM -->|"all public hosts forward to toolkit-landing:80"| Landing
+
+    Landing -->|"serves /"| Root
+    Landing -->|"proxies /cyberchef/"| CyberChef
+    Landing -->|"routes subdomain host"| Omni
+    Landing -->|"routes subdomain host"| IT
+    Landing -->|"routes subdomain host"| Unfurl
+    Landing -->|"routes subdomain host"| Parsel
+    Landing -->|"routes subdomain host"| Stegg
+    Landing -->|"routes subdomain host"| Network
+    Landing -->|"routes subdomain host"| PB
 
     PB --> PBData["pb-data volume"]
 ```
+
+- **`nginx-proxy`** is the outer network shared with Nginx Proxy Manager. Only
+  `toolkit-landing` joins it, so no tool container is directly exposed there.
+- **`toolkit-internal`** is the private bridge network where `toolkit-landing`
+  can reach the actual services. Domain and path decisions happen in
+  `toolkit-landing`, then traffic is proxied across this internal network to
+  the right container.
 
 - Recommended NPM settings for each proxy host:
   - Forward hostname: `toolkit-landing`
