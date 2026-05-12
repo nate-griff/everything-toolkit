@@ -40,10 +40,11 @@ scope.
 └── README.md
 ```
 
-## Local Development
+## Production Notes
 
-1. Copy `.env.example` to `.env` and set the root domain value used by the
-   routing docs, for example:
+This is the primary deployment mode for the repository.
+
+1. Copy `.env.example` to `.env`.
 
    ```powershell
    Copy-Item .env.example .env
@@ -53,37 +54,123 @@ scope.
    cp .env.example .env
    ```
 
-   A typical production-oriented `.env` will include `ROOT_DOMAIN=domain.com`
-   and `TZ=America/New_York`.
+2. Edit `.env` for your production domain and PB / MicroBin settings.
 
-2. Start the stack with:
+   At minimum, review:
+
+   - `ROOT_DOMAIN=domain.com`
+   - `MICROBIN_ADMIN_USERNAME`
+   - `MICROBIN_ADMIN_PASSWORD`
+   - `MICROBIN_PUBLIC_PATH`
+   - the PB privacy toggles in `.env.example`
+
+3. Start the production stack with the base Compose file.
 
    ```powershell
-   docker compose -f docker-compose.yml -f docker-compose.local.yml up -d
+   docker compose up -d
    ```
 
    ```bash
-   docker compose -f docker-compose.yml -f docker-compose.local.yml up -d
+   docker compose up -d
    ```
 
-   On the first run, Docker Compose builds Unfurl with the local
-   `unfurl/Dockerfile`. That Dockerfile clones the pinned `RyanDFIR/unfurl`
-   commit during the image build. If the pinned ref changes later, rebuild it
-   with:
+   The first run builds all three repo-local images:
+
+   - `parsel/Dockerfile`
+   - `stegg/Dockerfile`
+   - `unfurl/Dockerfile`
+
+   `Parsel` and `Stegg` clone pinned upstream refs during image build, and
+   `Unfurl` clones the pinned `RyanDFIR/unfurl` commit during image build.
+   `Network` and `PB / MicroBin` are pulled from published images instead.
+
+4. Rebuild the repo-local images whenever you change one of those Dockerfiles or
+   want to refresh the pinned upstream sources.
 
    ```powershell
-   docker compose -f docker-compose.yml -f docker-compose.local.yml build unfurl
+   docker compose build parsel stegg unfurl
    ```
 
    ```bash
-   docker compose -f docker-compose.yml -f docker-compose.local.yml build unfurl
+   docker compose build parsel stegg unfurl
    ```
+
+   The current Parsel image build uses:
+   - `git clone https://github.com/elder-plinius/P4RS3LT0NGV3.git .`
+   - pinned commit `730ce238a81357edcb07bfff91d0159de2556180`
+
+   The current Stegg image build uses:
+   - `git clone https://github.com/elder-plinius/ST3GG.git .`
+   - pinned commit `7db09389507f90025e728a9516e155ebcf8dbeaf`
 
    The current Unfurl image build still uses:
    - `git clone https://github.com/RyanDFIR/unfurl /unfurl`
    - pinned commit `2d2dac375433d2a7fbeede2d25c5f19b68d4d244`
 
-3. Open the stack locally with localtest.me hosts:
+5. Create the Nginx Proxy Manager proxy hosts manually. Every public hostname
+   should forward to `toolkit-landing:80`, with your certificates attached in
+   NPM.
+
+| Public host | Path | Target app |
+| --- | --- | --- |
+| `tools.domain.com` | `/` | Landing page |
+| `tools.domain.com` | `/cyberchef/` | CyberChef |
+| `omni.tools.domain.com` | `/` | Omni Tools |
+| `it.tools.domain.com` | `/` | IT Tools |
+| `unfurl.tools.domain.com` | `/` | Unfurl |
+| `parsel.tools.domain.com` | `/` | Parsel |
+| `stegg.tools.domain.com` | `/` | Stegg |
+| `network.tools.domain.com` | `/` | Network |
+| `pb.tools.domain.com` | `/` | PB / MicroBin |
+
+- Recommended NPM settings for each proxy host:
+  - Forward hostname: `toolkit-landing`
+  - Forward port: `80`
+  - Enable Websockets Support
+  - Use the existing certificate for the host
+
+- Keep the base `docker-compose.yml` for production so `nginx-proxy` stays an
+  external network there.
+- `toolkit-landing` remains the only container attached to both `nginx-proxy`
+  and `toolkit-internal`; the tool containers stay internal-only.
+- Certificate creation and renewal are handled manually outside the repo.
+
+## Local Development
+
+Use the local override only when you want a quick standalone test environment on
+port `8080`.
+
+1. Copy `.env.example` to `.env`.
+
+   ```powershell
+   Copy-Item .env.example .env
+   ```
+
+   ```bash
+   cp .env.example .env
+   ```
+
+2. Start the local stack with the override file:
+
+   ```powershell
+   docker compose -f docker-compose.yml -f docker-compose.local.yml up -d
+   ```
+
+   ```bash
+   docker compose -f docker-compose.yml -f docker-compose.local.yml up -d
+   ```
+
+3. If you need to rebuild the repo-local images locally:
+
+   ```powershell
+   docker compose -f docker-compose.yml -f docker-compose.local.yml build parsel stegg unfurl
+   ```
+
+   ```bash
+   docker compose -f docker-compose.yml -f docker-compose.local.yml build parsel stegg unfurl
+   ```
+
+4. Open the stack locally with localtest.me hosts:
 
    - `http://tools.localtest.me:8080/`
    - `http://tools.localtest.me:8080/cyberchef/`
@@ -114,34 +201,6 @@ containers remain unexposed.
 | `http://stegg.tools.localtest.me:8080/` | Stegg |
 | `http://network.tools.localtest.me:8080/` | Network |
 | `http://pb.tools.localtest.me:8080/` | PB / MicroBin |
-
-## Production Notes
-
-- Keep the base `docker-compose.yml` for production so `nginx-proxy` stays an
-  external network there.
-- Set `ROOT_DOMAIN=domain.com` in `.env` (or your real production domain).
-- NPM should forward `tools.domain.com` to `toolkit-landing:80`.
-
-| Public host | Path | Target app |
-| --- | --- | --- |
-| `tools.domain.com` | `/` | Landing page |
-| `tools.domain.com` | `/cyberchef/` | CyberChef |
-| `omni.tools.domain.com` | `/` | Omni Tools |
-| `it.tools.domain.com` | `/` | IT Tools |
-| `unfurl.tools.domain.com` | `/` | Unfurl |
-| `parsel.tools.domain.com` | `/` | Parsel |
-| `stegg.tools.domain.com` | `/` | Stegg |
-| `network.tools.domain.com` | `/` | Network |
-| `pb.tools.domain.com` | `/` | PB / MicroBin |
-
-- Recommended NPM settings for each proxy host:
-  - Forward hostname: `toolkit-landing`
-  - Forward port: `80`
-  - Enable Websockets Support
-  - Use the existing certificate for the host
-- `toolkit-landing` remains the only container attached to both `nginx-proxy`
-  and `toolkit-internal`; the tool containers stay internal-only.
-- Certificate creation and renewal are handled manually outside the repo.
 
 ### Why some tools use subdomains
 
@@ -207,6 +266,7 @@ Useful runtime checks:
 
 ```powershell
 docker compose config
+docker compose -f docker-compose.yml -f docker-compose.local.yml build parsel stegg unfurl
 docker compose -f docker-compose.yml -f docker-compose.local.yml build unfurl
 docker compose -f docker-compose.yml -f docker-compose.local.yml ps
 docker ps
@@ -228,6 +288,8 @@ Invoke-WebRequest http://pb.tools.localtest.me:8080/
 ```
 
 ```bash
+docker compose -f docker-compose.yml -f docker-compose.local.yml build parsel stegg unfurl
+docker compose -f docker-compose.yml -f docker-compose.local.yml build unfurl
 curl -I http://tools.localtest.me:8080/
 curl -I http://tools.localtest.me:8080/cyberchef/
 curl -I http://omni.tools.localtest.me:8080/
